@@ -24,27 +24,98 @@ The frontend is a small React app used to display articles.
 
 ---
 
-### Phase Breakdown
+## Phase Breakdown
 
-**Phase 1: Scraping & CRUD**
+### Phase 1: Scraping & CRUD
 
-- Scrapes the 5 oldest articles from the BeyondChats blogs section.
-- Stores article data in MySQL.
-- Provides CRUD APIs to manage articles.
+- Scrapes the **5 oldest articles** from the BeyondChats blogs section.
+- Stores article data in a MySQL database.
+- Exposes CRUD APIs to manage articles.
 
-**Phase 2: Article Updating using LLMs**
+The scraper first identifies the **last page** of the blogs section and starts collecting articles
+from there. If the last page contains fewer than 5 articles, it fetches one additional previous page
+and combines results to complete the required count.
 
-- Fetches original articles using internal APIs.
-  (The scraper first fetches the last blogs page. If fewer than 5 articles are found, it fetches the previous page and combines results until 5 articles are collected.)
-- Searches Google for related articles.
-- Scrapes content from the top external articles.
-- Uses an LLM to rewrite the original article based on the reference articles.
-- Stores the updated version along with reference links.
+When combining multiple pages, articles from previous pages are read **bottom-up** to preserve
+chronological order and ensure the oldest articles are selected.
 
-**Phase 3: Frontend**
+---
 
-- Displays both original and updated articles.
-- Simple and responsive UI focused on readability.
+### Phase 2: Article Updating Pipeline (Design)
+
+Phase 2 is implemented as a Node.js script that runs as a background/batch job.
+It is intentionally not exposed as an API endpoint, since the task is automation-oriented
+and easier to debug as a standalone script.
+
+The goal of this phase is to update existing articles by learning from similar
+articles that rank higher on search engines.
+
+#### High-level Flow
+
+1. Fetch original articles from the internal Articles API.
+2. For each article, search Google using the article title.
+3. From the search results, pick the first two links that point to blog/article pages
+   published by other websites.
+4. Scrape the main content from these two external articles.
+5. Send the original article and the reference articles to an LLM with a controlled prompt.
+6. Store the newly generated article using the existing CRUD APIs.
+7. Save reference links separately and display them at the bottom of the updated article.
+
+---
+
+#### Google Search Strategy
+
+Instead of scraping Google HTML directly (which is brittle and prone to blocking),
+a search API is used to fetch search results in a stable and predictable way.
+
+This keeps the focus of the assignment on content processing and automation logic,
+rather than dealing with anti-bot protections.
+
+Only results that look like blog or article pages are considered.
+
+---
+
+#### LLM Usage
+
+The LLM is used as a controlled rewriting step, not as a content generator from scratch.
+
+The prompt is designed to:
+
+- Preserve the original intent of the article.
+- Improve clarity, structure, and depth.
+- Align tone and formatting with the reference articles.
+- Avoid copying or closely paraphrasing reference content.
+
+The LLM is instructed to return clean, structured markdown without inline citations.
+Reference links are added separately at the end of the article.
+
+---
+
+#### Data Storage Approach
+
+Updated articles are stored using the same `articles` table:
+
+- Original articles have `is_updated = 0`
+- Updated articles have `is_updated = 1`
+- Reference links are stored as JSON and rendered separately on the frontend
+
+This avoids unnecessary schema complexity while keeping the relationship clear.
+
+---
+
+#### Error Handling & Trade-offs
+
+- If fewer than two suitable reference articles are found, the article is skipped.
+- Failures in one article do not stop the entire script.
+- The pipeline prioritizes clarity and determinism over aggressive automation.
+
+The goal of this phase is correctness and explainability, not maximum throughput.
+
+### Phase 3: Frontend
+
+- React-based frontend to display articles.
+- Shows both original and updated versions.
+- Simple, responsive UI focused on readability rather than heavy styling.
 
 ---
 
@@ -60,14 +131,19 @@ Database credentials are managed using environment variables.
 
 ---
 
-### Design Notes
+### Design Notes & Decisions
 
-The scraper uses simple and defensive selectors to avoid breaking if the blog structure changes slightly.
+The scraper intentionally uses simple and defensive selectors to avoid overfitting to the
+current HTML structure of the blog.
 
-I checked for an RSS/Atom feed as a cleaner way to fetch articles, but chose to scrape the blogs section
-directly to stay aligned with the assignment requirement of scraping from the last page.
+Pagination is handled explicitly to ensure the scraper always targets the oldest content, even
+when the last page contains fewer articles.
 
-Backend code follows a basic service–controller structure to keep responsibilities separated and readable.
+I checked for an RSS/Atom feed as a cleaner way to fetch articles, but chose to scrape the blogs
+section directly to stay aligned with the assignment requirement of scraping from the last page.
+
+Backend code follows a basic service–controller pattern to keep responsibilities separated and the
+logic easy to follow.
 
 ---
 
