@@ -93,6 +93,8 @@ The prompt is designed to:
 The LLM is instructed to return clean, structured markdown without inline citations.
 Reference links are added separately at the end of the article.
 
+The LLM is treated as a rewriting tool with strict constraints, not as a free-form content generator.
+
 ---
 
 #### Data Storage Approach

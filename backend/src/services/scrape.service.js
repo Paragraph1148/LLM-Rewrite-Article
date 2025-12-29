@@ -6,7 +6,7 @@ import cheerio from "cheerio";
  */
 
 export async function scrapeArticleContent(url) {
-  // TODO:
+  // TODO done:
   // - Fetch page HTML
   // - Extract main article content
   // - Return cleaned text
