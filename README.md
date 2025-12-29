@@ -73,6 +73,10 @@ rather than dealing with anti-bot protections.
 
 Only results that look like blog or article pages are considered.
 
+Basic heuristics are applied to filter blog/article-style links from search results.
+
+External article content is lightly truncated to keep LLM input manageable.
+
 ---
 
 #### LLM Usage

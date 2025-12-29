@@ -3,6 +3,8 @@ node_modules/
 
 # env
 .env
+backend/.env
+frontend/.env
 
 # logs
 *.log
