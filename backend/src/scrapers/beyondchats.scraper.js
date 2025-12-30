@@ -44,6 +44,31 @@ function detectLastPageNumber($) {
   return maxPage;
 }
 
+function extractArticleContent($) {
+  const selectors = [
+    ".entry-content",
+    ".post-content",
+    ".blog-content",
+    "article",
+  ];
+
+  for (const selector of selectors) {
+    const el = $(selector).first();
+
+    if (el.length) {
+      const text = el.text().trim();
+
+      // sanity check to avoid headers / empty blocks
+      if (text.length > 500) {
+        return text;
+      }
+    }
+  }
+
+  // fallback (should rarely happen)
+  return $("body").text().trim();
+}
+
 export async function scrapeOldestArticles() {
   // 1. Load main blogs page
   const mainRes = await axios.get(BLOGS_URL);
@@ -92,7 +117,7 @@ export async function scrapeOldestArticles() {
       const $ = cheerio.load(res.data);
 
       const title = $("h1").first().text().trim();
-      const content = $("article").text().trim();
+      const content = extractArticleContent($);
 
       if (!title || !content) {
         continue;
