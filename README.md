@@ -50,6 +50,16 @@ and easier to debug as a standalone script.
 The goal of this phase is to update existing articles by learning from similar
 articles that rank higher on search engines.
 
+---
+
+### Phase 3: Frontend
+
+A simple React-based frontend fetches articles from the backend APIs and displays
+both original and updated versions. The UI focuses on readability and responsiveness
+without unnecessary complexity.
+
+---
+
 #### High-level Flow
 
 1. Fetch original articles from the internal Articles API.
