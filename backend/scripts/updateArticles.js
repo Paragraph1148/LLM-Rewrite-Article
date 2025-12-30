@@ -14,12 +14,20 @@ async function fetchOriginalArticles() {
 }
 
 async function storeUpdatedArticle(original, content, references) {
+  // 1. Create the NEW improved article
   await axios.post(API_BASE, {
-    title: original.title,
+    title: original.title + " (Updated)",
     content: content,
     is_updated: 1,
-    reference_links: references,
+    reference_links: JSON.stringify(references),
     source_url: original.source_url,
+    slug: original.slug + "-v2",
+  });
+
+  // 2. Mark the ORIGINAL article as updated so the script doesn't pick it up again
+  await axios.put(`${API_BASE}/${original.id}`, {
+    ...original,
+    is_updated: 1,
   });
 }
 
