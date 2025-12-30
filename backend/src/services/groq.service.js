@@ -48,6 +48,7 @@ export async function rewriteArticleWithLLM({
 }
 
 function buildPrompt(original, references) {
+  // light truncation to avoid huge prompts
   const originalText =
     original.length > 6000 ? original.slice(0, 6000) : original;
 
@@ -77,10 +78,8 @@ Formatting rules:
 - Write in a professional, engaging style suitable for a business blog.
 
 Original Article:
-${truncatedOriginal}
+${originalText}
 
 ${referenceText}
-
-Please rewrite the original article following the instructions above:
 `;
 }

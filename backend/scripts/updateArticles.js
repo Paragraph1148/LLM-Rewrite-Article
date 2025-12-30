@@ -6,7 +6,7 @@ import { searchRelatedArticles } from "../src/services/search.service.js";
 import { scrapeArticleContent } from "../src/services/scrape.service.js";
 import { rewriteArticleWithLLM } from "../src/services/groq.service.js";
 
-const API_BASE = "http://localhost:4000/api/articles";
+const API_BASE = "https://llm-rewrite-article.onrender.com/api/articles";
 
 async function fetchOriginalArticles() {
   const res = await axios.get(API_BASE);
