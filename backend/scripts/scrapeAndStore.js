@@ -1,7 +1,10 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import axios from "axios";
 import { scrapeOldestArticles } from "../src/scrapers/beyondchats.scraper.js";
 
-const API_URL = "http://localhost:4000/api/articles";
+const API_URL = process.env.API_URL || "http://localhost:4000/api/articles";
 
 async function scrapeAndStore() {
   const articles = await scrapeOldestArticles();

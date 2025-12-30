@@ -14,11 +14,18 @@ async function fetchOriginalArticles() {
 }
 
 async function storeUpdatedArticle(original, content, references) {
-  await axios.put(`${API_BASE}/${original.id}`, {
+  // await axios.put(`${API_BASE}/${original.id}`, {
+  //   title: original.title,
+  //   content,
+  //   is_updated: 1,
+  //   reference_links: references,
+  // });
+  await axios.post(API_BASE, {
     title: original.title,
-    content,
+    content: rewritten,
     is_updated: 1,
-    reference_links: references,
+    reference_links: links,
+    source_url: original.source_url,
   });
 }
 
