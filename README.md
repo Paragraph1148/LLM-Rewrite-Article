@@ -169,6 +169,21 @@ This avoids unnecessary schema complexity while keeping the relationship clear.
 
 The goal of this phase is correctness and explainability, not maximum throughput.
 
+---
+
+### Data Flow Diagram
+
+The diagram below shows the high-level data flow across all three phases.
+It highlights how articles are scraped, stored, updated using an LLM,
+and finally displayed on the frontend.
+
+The focus of the diagram is clarity of data movement rather than
+low-level implementation details.
+
+![Data Flow Diagram](./dfd.png)
+
+---
+
 ### Phase 3: Frontend
 
 - React-based frontend to display articles.
