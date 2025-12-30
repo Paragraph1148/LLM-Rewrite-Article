@@ -8,6 +8,15 @@ The work is divided into three phases as mentioned in the assignment.
 
 ---
 
+## Live Demo
+
+Frontend: https://llm-rewrite-article.vercel.app/
+
+The live frontend displays original and LLM-updated articles side by side
+for direct comparison.
+
+---
+
 ### Tech Stack
 
 - Node.js
@@ -227,6 +236,10 @@ section directly to stay aligned with the assignment requirement of scraping fro
 
 Backend code follows a basic service–controller pattern to keep responsibilities separated and the
 logic easy to follow.
+
+Original articles are stored immutably. Updated articles are inserted
+as separate records, enabling clean side-by-side comparison without
+mutating source data.
 
 ---
 

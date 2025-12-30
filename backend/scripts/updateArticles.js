@@ -6,7 +6,7 @@ import { searchRelatedArticles } from "../src/services/search.service.js";
 import { scrapeArticleContent } from "../src/services/scrape.service.js";
 import { rewriteArticleWithLLM } from "../src/services/groq.service.js";
 
-const API_BASE = "https://llm-rewrite-article.onrender.com/api/articles";
+const API_BASE = process.env.API_URL || "http://localhost:4000/api/articles";
 
 async function fetchOriginalArticles() {
   const res = await axios.get(API_BASE);
@@ -14,17 +14,11 @@ async function fetchOriginalArticles() {
 }
 
 async function storeUpdatedArticle(original, content, references) {
-  // await axios.put(`${API_BASE}/${original.id}`, {
-  //   title: original.title,
-  //   content,
-  //   is_updated: 1,
-  //   reference_links: references,
-  // });
   await axios.post(API_BASE, {
     title: original.title,
-    content: rewritten,
+    content: content,
     is_updated: 1,
-    reference_links: links,
+    reference_links: references,
     source_url: original.source_url,
   });
 }
@@ -50,12 +44,14 @@ async function run() {
 
     try {
       const links = await searchRelatedArticles(article.title);
+
       if (links.length < 2) {
         console.log("  Skipped: not enough reference articles\n");
         continue;
       }
 
       const references = [];
+
       for (const link of links) {
         const text = await scrapeArticleContent(link);
         if (text) references.push(text);
