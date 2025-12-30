@@ -61,7 +61,12 @@ export async function scrapeOldestArticles() {
   const lastPageRes = await axios.get(lastPageUrl);
   const $last = cheerio.load(lastPageRes.data);
 
-  const lastPageLinks = extractArticleLinks($last);
+  // --- FIX STARTS HERE ---
+  // We reverse the links to get Bottom (Oldest) -> Top (Newer)
+  // Original code: const lastPageLinks = extractArticleLinks($last);
+  const lastPageLinks = extractArticleLinks($last).reverse();
+  // --- FIX ENDS HERE ---
+
   collectedLinks.push(...lastPageLinks);
 
   // 4. If fewer than 5, fetch previous page and take from bottom
@@ -70,6 +75,7 @@ export async function scrapeOldestArticles() {
     const prevRes = await axios.get(prevPageUrl);
     const $prev = cheerio.load(prevRes.data);
 
+    // This was already correct (taking from bottom of prev page)
     const prevLinks = extractArticleLinks($prev).reverse();
     collectedLinks.push(...prevLinks);
   }

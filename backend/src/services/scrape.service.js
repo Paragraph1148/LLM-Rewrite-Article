@@ -1,5 +1,5 @@
 import axios from "axios";
-import cheerio from "cheerio";
+import * as cheerio from "cheerio";
 
 /* Scrapes main readable content from external blog/article pages.
  * Keeps extraction logic simple and defensive.

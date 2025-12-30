@@ -1,14 +1,21 @@
 import pool from "../db/index.js";
 
 export async function createArticle(data) {
-  const { title, slug, content, source_url } = data;
+  const { title, slug, content, source_url, is_updated, reference_links } =
+    data;
 
   const [result] = await pool.query(
-    `INSERT INTO articles (title, slug, content, source_url)
-    VALUES (?, ?, ?, ?)`,
-    [title, slug, content, source_url]
+    `INSERT INTO articles (title, slug, content, source_url, is_updated, reference_links)
+    VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      title,
+      slug,
+      content,
+      source_url,
+      is_updated || 0,
+      reference_links ? JSON.stringify(reference_links) : null,
+    ]
   );
-
   return result.insertId;
 }
 

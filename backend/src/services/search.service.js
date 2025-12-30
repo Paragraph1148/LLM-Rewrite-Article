@@ -11,7 +11,6 @@ export async function searchRelatedArticles(query) {
   // - Return top 2 relevant links
 
   if (!query) return [];
-
   try {
     const response = await axios.get("https://serpapi.com/search.json", {
       params: {
@@ -22,14 +21,14 @@ export async function searchRelatedArticles(query) {
     });
 
     const results = response.data.organic_results || [];
-
     const links = [];
 
     for (const result of results) {
       if (!result.link) continue;
-
-      // basic filtering to avoid non-article pages
-      if (result.link.includes("blog") || result.link.includes("article")) {
+      if (
+        !result.link.endsWith(".pdf") &&
+        !result.link.includes("facebook.com")
+      ) {
         links.push(result.link);
       }
 

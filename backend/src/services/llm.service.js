@@ -1,4 +1,6 @@
-import axios from "axios";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 /* Handles interaction with the LLM.
  * Takes original article and reference articles,
@@ -9,48 +11,40 @@ export async function rewriteArticleWithLLM({
   originalArticle,
   referenceArticles,
 }) {
-  // TODO:
-  // - Build controlled prompt
-  // - Call LLM API
-  // - Return rewritten content
-
-  if (!originalArticle || !referenceArticles?.length) {
+  if (!originalArticle || referenceArticles.length < 2) {
     return "";
   }
 
-  const prompt = buildPrompt(originalArticle, referenceArticles);
-
   try {
-    const response = await axios.post(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a professional content editor. You rewrite articles to improve clarity and structure without copying source material.",
-          },
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-        temperature: 0.4,
+    const model = genAI.getGenerativeModel({
+      model: "gemma-3-27b-it",
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: 2000,
       },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.LLM_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
+    });
 
-    const content = response.data?.choices?.[0]?.message?.content?.trim();
+    const prompt = buildPrompt(originalArticle, referenceArticles);
+    console.log("Sending prompt to Gemma 3 27B IT...");
 
-    return content || "";
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+
+    return text || "";
   } catch (err) {
-    console.error("LLM rewrite failed:", err.message);
+    console.error("Gemma rewrite failed:", err.message);
+
+    // Check if it's a rate limit error
+    if (err.message.includes("429") || err.message.includes("rate limit")) {
+      console.log("Rate limit hit. Consider adding delays between requests.");
+    }
+
+    // Check if it's an API key error
+    if (err.message.includes("API key not valid")) {
+      console.log("API key issue. Verify your key is still valid.");
+    }
+
     return "";
   }
 }

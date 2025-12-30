@@ -97,6 +97,58 @@ The LLM is treated as a rewriting tool with strict constraints, not as a free-fo
 
 ---
 
+### LLM Provider Choice (Phase 2)
+
+Phase 2 requires calling an LLM API to rewrite existing articles based on reference content.
+The pipeline was intentionally designed to be provider-agnostic, with all LLM logic isolated
+inside a single service layer.
+
+#### Initial Approach
+
+The initial implementation used OpenAI-compatible APIs. However, during local development,
+the OpenAI free tier account had `$0` available credits, which resulted in consistent
+`insufficient_quota` errors. Even though the integration and retry logic were correct,
+requests were rejected before execution.
+
+A similar issue was encountered while testing Google Gemini, where valid API keys were loaded
+successfully but requests failed due to account-level API restrictions.
+
+These issues were related to **API access and billing**, not code correctness.
+
+---
+
+#### Final Decision: Groq
+
+To ensure the Phase 2 pipeline could run end-to-end during local testing, the LLM provider
+was switched to **Groq**, which offers a free and reliable API for OpenAI-compatible models
+(e.g. LLaMA 3.3).
+
+Reasons for choosing Groq:
+
+- Free-tier availability without billing setup
+- OpenAI-compatible API format (minimal code changes)
+- Fast and stable responses for long-form text rewriting
+
+The original `llm.service.js` was replaced with `groq.service.js`, while keeping the same
+function signature. This allowed the rest of the pipeline to remain unchanged.
+
+---
+
+#### Current Behavior
+
+- The Phase 2 script successfully:
+  - Fetches original articles
+  - Searches and scrapes reference articles
+  - Calls the Groq LLM to rewrite content
+  - Stores updated articles along with reference links
+- All external API calls include defensive checks and graceful failure handling
+- If any step fails for a specific article, the pipeline skips it and continues
+
+This approach ensures correctness, transparency, and a working end-to-end flow without
+relying on paid API credits.
+
+---
+
 #### Data Storage Approach
 
 Updated articles are stored using the same `articles` table:
