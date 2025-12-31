@@ -16,7 +16,7 @@ async function fetchOriginalArticles() {
 async function storeUpdatedArticle(original, content, references) {
   // 1. Create the NEW improved article
   await axios.post(API_BASE, {
-    title: original.title + " (Updated)",
+    title: original.title,
     content: content,
     is_updated: 1,
     reference_links: JSON.stringify(references),

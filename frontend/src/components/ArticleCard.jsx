@@ -5,6 +5,13 @@ function ArticleCard({ article, label, showReferences = false }) {
 
   if (!article) return null;
 
+  // Ensure reference_links is always an array
+  const refs = Array.isArray(article.reference_links)
+    ? article.reference_links
+    : typeof article.reference_links === "string"
+    ? [article.reference_links]
+    : [];
+
   return (
     <div
       style={{
@@ -26,11 +33,11 @@ function ArticleCard({ article, label, showReferences = false }) {
         {expanded ? "Show less" : "Read more"}
       </button>
 
-      {showReferences && article.reference_links?.length > 0 && (
+      {showReferences && refs.length > 0 && (
         <div style={{ marginTop: 16 }}>
           <h4>References</h4>
           <ul>
-            {article.reference_links.map((link, idx) => (
+            {refs.map((link, idx) => (
               <li key={idx}>
                 <a href={link} target="_blank" rel="noreferrer">
                   {link}
