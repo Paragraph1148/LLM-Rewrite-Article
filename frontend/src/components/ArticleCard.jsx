@@ -5,11 +5,13 @@ function ArticleCard({ article, label, showReferences = false }) {
 
   if (!article) return null;
 
-  // Ensure reference_links is always an array
+  // ---------- Normalise reference_links ----------
   const refs = Array.isArray(article.reference_links)
     ? article.reference_links
     : typeof article.reference_links === "string"
-    ? [article.reference_links]
+    ? article.reference_links
+        .split(/\s*,\s*/) // split on commas (optional spaces)
+        .filter(Boolean) // drop empty strings
     : [];
 
   return (
@@ -33,6 +35,7 @@ function ArticleCard({ article, label, showReferences = false }) {
         {expanded ? "Show less" : "Read more"}
       </button>
 
+      {/* ---------- Render references only when we have them ---------- */}
       {showReferences && refs.length > 0 && (
         <div style={{ marginTop: 16 }}>
           <h4>References</h4>
