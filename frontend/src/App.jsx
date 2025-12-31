@@ -3,7 +3,7 @@ import axios from "axios";
 import ArticlePair from "./components/ArticlePair";
 
 const API_URL = `${
-  import.meta.env.VITE_DB_URL || "http://localhost:4000"
+  import.meta.env.DB_URL || "http://localhost:4000"
 }/api/articles`;
 
 function App() {
