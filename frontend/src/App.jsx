@@ -2,9 +2,7 @@ import { useEffect, useState } from "react";
 import axios from "axios";
 import ArticlePair from "./components/ArticlePair";
 
-const API_URL = `${
-  import.meta.env.DB_URL || "http://localhost:4000"
-}/api/articles`;
+const API_URL = "https://llm-rewrite-article.onrender.com/api/articles";
 
 function App() {
   const [articles, setArticles] = useState([]);
