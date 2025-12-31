@@ -208,7 +208,7 @@ The backend responds with both original and updated articles.
 The frontend groups articles by title and displays the original and rewritten versions side by side, along with reference links.
 No data mutation occurs on the frontend.
 
-## ![Frontend Data Flow Diagram](.fdfd.png)
+![Frontend Data Flow Diagram](.fdfd.png)
 
 ### Phase 3: Frontend
 
