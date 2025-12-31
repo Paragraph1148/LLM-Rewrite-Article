@@ -1,0 +1,1685 @@
+===== ./backend/src/routes/article.routes.js =====
+import { Router } from "express";
+import * as controller from "../controllers/article.controller.js";
+
+const router = Router();
+
+router.get("/", controller.getAll);
+router.get("/:id", controller.getById);
+router.post("/", controller.create);
+router.put("/:id", controller.update);
+router.delete("/:id", controller.remove);
+
+export default router;
+===== ./backend/src/controllers/article.controller.js =====
+import * as ArticleService from "../services/article.service.js";
+
+export async function create(req, res) {
+  try {
+    const id = await ArticleService.createArticle(req.body);
+    console.log("BODY:", req.body);
+    res.status(201).json({ id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+export async function getAll(req, res) {
+  try {
+    const articles = await ArticleService.getAllArticles();
+
+    res.json(articles);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+export async function getById(req, res) {
+  try {
+    const article = await ArticleService.getArticleById(req.params.id);
+
+    if (!article) {
+      return res.status(404).json({ error: "Not found" });
+    }
+
+    res.json(article);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+export async function update(req, res) {
+  try {
+    await ArticleService.updateArticle(req.params.id, req.body);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+export async function remove(req, res) {
+  try {
+    await ArticleService.deleteArticle(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+===== ./backend/src/services/article.service.js =====
+import pool from "../db/index.js";
+
+export async function createArticle(data) {
+  const { title, slug, content, source_url, is_updated, reference_links } =
+    data;
+
+  const [result] = await pool.query(
+    `INSERT INTO articles (title, slug, content, source_url, is_updated, reference_links)
+    VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      title,
+      slug,
+      content,
+      source_url,
+      is_updated || 0,
+      reference_links ? JSON.stringify(reference_links) : null,
+    ]
+  );
+  return result.insertId;
+}
+
+export async function getAllArticles() {
+  const [rows] = await pool.query(
+    `SELECT * FROM articles ORDER BY created_at DESC`
+  );
+
+  return rows;
+}
+
+export async function getArticleById(id) {
+  const [rows] = await pool.query(`SELECT * FROM articles WHERE id = ?`, [id]);
+
+  return rows[0];
+}
+
+export async function updateArticle(id, data) {
+  const { title, content, is_updated, reference_links } = data;
+
+  await pool.query(
+    `UPDATE articles
+    SET title = ?, content = ?, is_updated = ?, reference_links = ?
+    WHERE id = ?`,
+    [title, content, is_updated, JSON.stringify(reference_links), id]
+  );
+}
+
+export async function deleteArticle(id) {
+  await pool.query(`DELETE FROM articles WHERE id = ?`, [id]);
+}
+===== ./backend/src/services/search.service.js =====
+import axios from "axios";
+
+/* Responsible for searching the web for related articles.
+ * This will be implemented using a search API for stability.
+ */
+
+export async function searchRelatedArticles(query) {
+  // TODO done:
+  // - Call search API
+  // - Filter results to blog/article pages
+  // - Return top 2 relevant links
+
+  if (!query) return [];
+  try {
+    const response = await axios.get("https://serpapi.com/search.json", {
+      params: {
+        q: query,
+        api_key: process.env.SEARCH_API_KEY,
+        num: 10,
+      },
+    });
+
+    const results = response.data.organic_results || [];
+    const links = [];
+
+    for (const result of results) {
+      if (!result.link) continue;
+      if (
+        !result.link.endsWith(".pdf") &&
+        !result.link.includes("facebook.com")
+      ) {
+        links.push(result.link);
+      }
+
+      if (links.length === 2) break;
+    }
+
+    return links;
+  } catch (err) {
+    console.error("Search failed:", err.message);
+    return [];
+  }
+}
+===== ./backend/src/services/scrape.service.js =====
+import axios from "axios";
+import * as cheerio from "cheerio";
+
+/* Scrapes main readable content from external blog/article pages.
+ * Keeps extraction logic simple and defensive.
+ */
+
+export async function scrapeArticleContent(url) {
+  // TODO done:
+  // - Fetch page HTML
+  // - Extract main article content
+  // - Return cleaned text
+
+  if (!url) return "";
+
+  try {
+    const res = await axios.get(url, {
+      timeout: 10000,
+      headers: {
+        // some sites block default user agents
+        "User-Agent": "Mozilla/5.0 (compatible; BeyondChatsBot/1.0)",
+      },
+    });
+
+    const $ = cheerio.load(res.data);
+
+    let content = "";
+
+    // try common article containers first
+    const selectors = [
+      "article",
+      "main",
+      ".post-content",
+      ".article-content",
+      ".entry-content",
+    ];
+
+    for (const selector of selectors) {
+      const text = $(selector).text().trim();
+      if (text && text.length > content.length) {
+        content = text;
+      }
+    }
+
+    // fallback: grab all paragraphs
+    if (!content) {
+      const paragraphs = [];
+      $("p").each((_, el) => {
+        const text = $(el).text().trim();
+        if (text.length > 50) {
+          paragraphs.push(text);
+        }
+      });
+      content = paragraphs.join("\n\n");
+    }
+    if (content.length > 8000) {
+      content = content.slice(0, 8000);
+    }
+
+    return content;
+  } catch (err) {
+    console.error(`Failed to scrape ${url}:`, err.message);
+    return "";
+  }
+}
+===== ./backend/src/services/llm.service.js =====
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+/* Handles interaction with the LLM.
+ * Takes original article and reference articles,
+ * returns a rewritten version.
+ */
+
+export async function rewriteArticleWithLLM({
+  originalArticle,
+  referenceArticles,
+}) {
+  if (!originalArticle || referenceArticles.length < 2) {
+    return "";
+  }
+
+  try {
+    const model = genAI.getGenerativeModel({
+      model: "gemma-3-27b-it",
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: 2000,
+      },
+    });
+
+    const prompt = buildPrompt(originalArticle, referenceArticles);
+    console.log("Sending prompt to Gemma 3 27B IT...");
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+
+    return text || "";
+  } catch (err) {
+    console.error("Gemma rewrite failed:", err.message);
+
+    // Check if it's a rate limit error
+    if (err.message.includes("429") || err.message.includes("rate limit")) {
+      console.log("Rate limit hit. Consider adding delays between requests.");
+    }
+
+    // Check if it's an API key error
+    if (err.message.includes("API key not valid")) {
+      console.log("API key issue. Verify your key is still valid.");
+    }
+
+    return "";
+  }
+}
+
+/**
+ * Builds a controlled prompt for the LLM.
+ * Keeping this separate makes it easier to tweak later.
+ */
+function buildPrompt(original, references) {
+  const referenceText = references
+    .map((ref, idx) => {
+      return `Reference Article ${idx + 1}:\n${ref}`;
+    })
+    .join("\n\n");
+
+  return `
+You are given an original blog article and two reference articles.
+
+Your task:
+- Rewrite the original article to improve clarity, structure, and depth.
+- Keep the original intent and topic.
+- Use the reference articles only as guidance for tone and structure.
+- Do NOT copy sentences or phrases from the reference articles.
+- Do NOT mention the reference articles in the body.
+
+Formatting rules:
+- Use clear headings and subheadings.
+- Write in clean, readable markdown.
+- Do not include a conclusion section unless it fits naturally.
+
+Original Article:
+${original}
+
+${referenceText}
+`;
+}
+===== ./backend/src/services/groq.service.js =====
+import axios from "axios";
+
+/**
+ * Uses Groq (OpenAI-compatible API) to rewrite an article
+ * using reference articles as guidance.
+ */
+export async function rewriteArticleWithLLM({
+  originalArticle,
+  referenceArticles,
+}) {
+  if (!originalArticle || referenceArticles.length < 2) {
+    return "";
+  }
+
+  const prompt = buildPrompt(originalArticle, referenceArticles);
+
+  try {
+    const res = await axios.post(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        model: "llama-3.3-70b-versatile",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a professional editor rewriting blog articles for clarity and structure.",
+          },
+          {
+            role: "user",
+            content: prompt,
+          },
+        ],
+        temperature: 0.5,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    return res.data.choices[0]?.message?.content?.trim() || "";
+  } catch (err) {
+    console.error("LLM rewrite failed:", err.message);
+    return "";
+  }
+}
+
+function buildPrompt(original, references) {
+  // light truncation to avoid huge prompts
+  const originalText =
+    original.length > 6000 ? original.slice(0, 6000) : original;
+
+  const referenceText = references
+    .map((ref, i) => {
+      const text = ref.length > 3000 ? ref.slice(0, 3000) : ref;
+      return `Reference ${i + 1}:\n${text}`;
+    })
+    .join("\n\n");
+
+  return `
+You are given an original blog article and two reference articles.
+
+Your task:
+- Rewrite the original article to improve clarity, structure, and depth.
+- Keep the original intent and topic.
+- Use the reference articles only as guidance for tone and structure.
+- Do NOT copy sentences or phrases from the reference articles.
+- Do NOT mention the reference articles in the body.
+- Do NOT include phrases like "Based on the article" or "According to the reference".
+
+Formatting rules:
+- Use clear headings and subheadings (## for main headings, ### for subheadings).
+- Write in clean, readable markdown.
+- Do not include a conclusion section unless it fits naturally.
+- Keep the article length similar to the original (not too short, not too long).
+- Write in a professional, engaging style suitable for a business blog.
+
+Original Article:
+${originalText}
+
+${referenceText}
+`;
+}
+===== ./backend/src/db/schema.sql =====
+CREATE TABLE articles (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  title VARCHAR(255) NOT NULL,
+  slug VARCHAR(255) NOT NULL,
+  content LONGTEXT NOT NULL,
+  source_url TEXT,
+  is_updated TINYINT(1) DEFAULT 0,
+  reference_links JSON NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+===== ./backend/src/db/testConnection.js =====
+import dotenv from "dotenv";
+dotenv.config();
+
+import pool from "./index.js";
+
+console.log("DB_USER =", process.env.DB_USER);
+console.log("DB_NAME =", process.env.DB_NAME);
+
+async function testDB() {
+  try {
+    await pool.query("SELECT 1");
+    console.log("Database connected");
+    process.exit(0);
+  } catch (err) {
+    console.error("Database connection failed:", err.message);
+    process.exit(1);
+  }
+}
+
+testDB();
+===== ./backend/src/db/index.js =====
+import dotenv from "dotenv";
+dotenv.config();
+
+import mysql from "mysql2/promise";
+
+const pool = mysql.createPool({
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD || "",
+  database: process.env.DB_NAME,
+  port: process.env.DB_PORT,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
+});
+
+export default pool;
+===== ./backend/src/index.js =====
+import express from "express";
+import cors from "cors";
+import dotenv from "dotenv";
+import articleRoutes from "./routes/article.routes.js";
+
+dotenv.config();
+
+const app = express();
+
+app.use(cors());
+app.use(express.json());
+
+app.get("/health", (req, res) => {
+  res.json({ status: "ok" });
+});
+
+app.use("/api/articles", articleRoutes);
+
+const PORT = process.env.PORT || 4000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+===== ./backend/src/scrapers/beyondchats.scraper.js =====
+import axios from "axios";
+import * as cheerio from "cheerio";
+import slugify from "slugify";
+
+const BASE_URL = "https://beyondchats.com";
+const BLOGS_URL = `${BASE_URL}/blogs/`;
+
+/**
+ * Extract article links from a blogs listing page.
+ * Returns links in DOM order (top -> bottom).
+ */
+function extractArticleLinks($) {
+  const links = [];
+
+  $("article").each((_, el) => {
+    const href = $(el).find("a").first().attr("href");
+
+    if (href && href.startsWith(BASE_URL) && !href.includes("/page/")) {
+      links.push(href);
+    }
+  });
+
+  return links;
+}
+
+/**
+ * Find the highest page number from pagination links.
+ */
+function detectLastPageNumber($) {
+  let maxPage = 1;
+
+  $("a").each((_, el) => {
+    const href = $(el).attr("href");
+    const match = href && href.match(/\/blogs\/page\/(\d+)/);
+
+    if (match) {
+      const pageNum = parseInt(match[1], 10);
+      if (pageNum > maxPage) {
+        maxPage = pageNum;
+      }
+    }
+  });
+
+  return maxPage;
+}
+
+function extractArticleContent($) {
+  const selectors = [
+    ".entry-content",
+    ".post-content",
+    ".blog-content",
+    "article",
+  ];
+
+  for (const selector of selectors) {
+    const el = $(selector).first();
+
+    if (el.length) {
+      const text = el.text().trim();
+
+      // sanity check to avoid headers / empty blocks
+      if (text.length > 500) {
+        return text;
+      }
+    }
+  }
+
+  // fallback (should rarely happen)
+  return $("body").text().trim();
+}
+
+export async function scrapeOldestArticles() {
+  // 1. Load main blogs page
+  const mainRes = await axios.get(BLOGS_URL);
+  const $main = cheerio.load(mainRes.data);
+
+  // 2. Detect true last page
+  const lastPageNumber = detectLastPageNumber($main);
+  const lastPageUrl = `${BLOGS_URL}page/${lastPageNumber}/`;
+
+  console.log("Detected last blogs page:", lastPageUrl);
+
+  const collectedLinks = [];
+
+  // 3. Fetch last page (oldest articles)
+  const lastPageRes = await axios.get(lastPageUrl);
+  const $last = cheerio.load(lastPageRes.data);
+
+  const lastPageLinks = extractArticleLinks($last).reverse();
+
+  collectedLinks.push(...lastPageLinks);
+
+  // 4. If fewer than 5, fetch previous page and take from bottom
+  if (collectedLinks.length < 5 && lastPageNumber > 1) {
+    const prevPageUrl = `${BLOGS_URL}page/${lastPageNumber - 1}/`;
+    const prevRes = await axios.get(prevPageUrl);
+    const $prev = cheerio.load(prevRes.data);
+    const prevLinks = extractArticleLinks($prev).reverse();
+    collectedLinks.push(...prevLinks);
+  }
+
+  // 5. Take the oldest 5 overall
+  const finalLinks = collectedLinks.slice(0, 5);
+
+  const articles = [];
+
+  // 6. Scrape individual articles
+  for (const link of finalLinks) {
+    try {
+      const res = await axios.get(link);
+      const $ = cheerio.load(res.data);
+
+      const title = $("h1").first().text().trim();
+      const content = extractArticleContent($);
+
+      if (!title || !content) {
+        continue;
+      }
+
+      articles.push({
+        title,
+        slug: slugify(title, { lower: true }),
+        content,
+        source_url: link,
+      });
+    } catch (err) {
+      console.log(`Skipping article due to error: ${link}`);
+    }
+  }
+
+  return articles;
+}
+===== ./backend/package.json =====
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "axios": "^1.13.2",
+    "cheerio": "^1.1.2",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "mysql2": "^3.16.0",
+    "slugify": "^1.6.6"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
+  }
+}
+===== ./backend/scripts/scrapeAndStore.js =====
+import dotenv from "dotenv";
+dotenv.config();
+
+import axios from "axios";
+import { scrapeOldestArticles } from "../src/scrapers/beyondchats.scraper.js";
+
+const API_URL = process.env.API_URL || "http://localhost:4000/api/articles";
+
+async function scrapeAndStore() {
+  const articles = await scrapeOldestArticles();
+
+  if (!articles || articles.length === 0) {
+    console.log("No articles found to store");
+    return;
+  }
+
+  for (let i = 0; i < articles.length; i++) {
+    const article = articles[i];
+
+    try {
+      await axios.post(API_URL, article);
+      console.log(`Saved (${i + 1}/${articles.length}): ${article.title}`);
+    } catch (err) {
+      console.log(`Failed to save article: ${article.title}`);
+    }
+  }
+
+  console.log("Scraping job finished");
+}
+
+scrapeAndStore()
+  .then(() => process.exit(0))
+  .catch((err) => {
+    console.error("Scraper failed:", err.message);
+    process.exit(1);
+  });
+===== ./backend/scripts/updateArticles.js =====
+import dotenv from "dotenv";
+dotenv.config();
+
+import axios from "axios";
+import { searchRelatedArticles } from "../src/services/search.service.js";
+import { scrapeArticleContent } from "../src/services/scrape.service.js";
+import { rewriteArticleWithLLM } from "../src/services/groq.service.js";
+
+const API_BASE = process.env.API_URL || "http://localhost:4000/api/articles";
+
+async function fetchOriginalArticles() {
+  const res = await axios.get(API_BASE);
+  return res.data.filter((a) => a.is_updated === 0);
+}
+
+async function storeUpdatedArticle(original, content, references) {
+  // 1. Create the NEW improved article
+  await axios.post(API_BASE, {
+    title: original.title,
+    content: content,
+    is_updated: 1,
+    reference_links: JSON.stringify(references),
+    source_url: original.source_url,
+    slug: original.slug + "-v2",
+  });
+
+  // // 2. Mark the ORIGINAL article as updated so the script doesn't pick it up again
+  // await axios.put(`${API_BASE}/${original.id}`, {
+  //   ...original,
+  //   is_updated: 1,
+  // });
+}
+
+async function run() {
+  console.log("Starting Phase 2 pipeline...\n");
+
+  if (!process.env.GROQ_API_KEY) {
+    console.error("GROQ_API_KEY not set");
+    return;
+  }
+
+  const articles = await fetchOriginalArticles();
+
+  if (!articles.length) {
+    console.log("No original articles found.");
+    return;
+  }
+
+  for (let i = 0; i < articles.length; i++) {
+    const article = articles[i];
+    console.log(`(${i + 1}/${articles.length}) ${article.title}`);
+
+    try {
+      const links = await searchRelatedArticles(article.title);
+
+      if (links.length < 2) {
+        console.log("  Skipped: not enough reference articles\n");
+        continue;
+      }
+
+      const references = [];
+
+      for (const link of links) {
+        const text = await scrapeArticleContent(link);
+        if (text) references.push(text);
+      }
+
+      if (references.length < 2) {
+        console.log("  Skipped: could not scrape references\n");
+        continue;
+      }
+
+      const rewritten = await rewriteArticleWithLLM({
+        originalArticle: article.content,
+        referenceArticles: references,
+      });
+
+      if (!rewritten) {
+        console.log("  Skipped: LLM rewrite failed\n");
+        continue;
+      }
+
+      await storeUpdatedArticle(article, rewritten, links);
+      console.log("  Updated article saved\n");
+    } catch (err) {
+      console.log("  Error:", err.message, "\n");
+    }
+
+    // small delay to avoid hitting free-tier limits
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+
+  console.log("Phase 2 pipeline completed.");
+}
+
+run().catch((err) => {
+  console.error("Pipeline failed:", err.message);
+  process.exit(1);
+});
+===== ./backend/.env.example =====
+#Express
+PORT=PORT
+
+#Database
+DB_HOST=root
+DB_PORT=port
+DB_USER=your_username
+DB_PASSWORD=your_password
+DB_NAME=db_name
+API_URL=api_url
+
+#API Keys
+SEARCH_API_KEY=your_serp_api_key
+GROQ_API_KEY=your_groq_api_key===== ./frontend/src/App.css =====
+#root {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 2rem;
+  text-align: center;
+}
+
+.logo {
+  height: 6em;
+  padding: 1.5em;
+  will-change: filter;
+  transition: filter 300ms;
+}
+.logo:hover {
+  filter: drop-shadow(0 0 2em #646cffaa);
+}
+.logo.react:hover {
+  filter: drop-shadow(0 0 2em #61dafbaa);
+}
+
+@keyframes logo-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  a:nth-of-type(2) .logo {
+    animation: logo-spin infinite 20s linear;
+  }
+}
+
+.card {
+  padding: 2em;
+}
+
+.read-the-docs {
+  color: #888;
+}
+===== ./frontend/src/assets/react.svg =====
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" aria-hidden="true" role="img" class="iconify iconify--logos" width="35.93" height="32" preserveAspectRatio="xMidYMid meet" viewBox="0 0 256 228"><path fill="#00D8FF" d="M210.483 73.824a171.49 171.49 0 0 0-8.24-2.597c.465-1.9.893-3.777 1.273-5.621c6.238-30.281 2.16-54.676-11.769-62.708c-13.355-7.7-35.196.329-57.254 19.526a171.23 171.23 0 0 0-6.375 5.848a155.866 155.866 0 0 0-4.241-3.917C100.759 3.829 77.587-4.822 63.673 3.233C50.33 10.957 46.379 33.89 51.995 62.588a170.974 170.974 0 0 0 1.892 8.48c-3.28.932-6.445 1.924-9.474 2.98C17.309 83.498 0 98.307 0 113.668c0 15.865 18.582 31.778 46.812 41.427a145.52 145.52 0 0 0 6.921 2.165a167.467 167.467 0 0 0-2.01 9.138c-5.354 28.2-1.173 50.591 12.134 58.266c13.744 7.926 36.812-.22 59.273-19.855a145.567 145.567 0 0 0 5.342-4.923a168.064 168.064 0 0 0 6.92 6.314c21.758 18.722 43.246 26.282 56.54 18.586c13.731-7.949 18.194-32.003 12.4-61.268a145.016 145.016 0 0 0-1.535-6.842c1.62-.48 3.21-.974 4.76-1.488c29.348-9.723 48.443-25.443 48.443-41.52c0-15.417-17.868-30.326-45.517-39.844Zm-6.365 70.984c-1.4.463-2.836.91-4.3 1.345c-3.24-10.257-7.612-21.163-12.963-32.432c5.106-11 9.31-21.767 12.459-31.957c2.619.758 5.16 1.557 7.61 2.4c23.69 8.156 38.14 20.213 38.14 29.504c0 9.896-15.606 22.743-40.946 31.14Zm-10.514 20.834c2.562 12.94 2.927 24.64 1.23 33.787c-1.524 8.219-4.59 13.698-8.382 15.893c-8.067 4.67-25.32-1.4-43.927-17.412a156.726 156.726 0 0 1-6.437-5.87c7.214-7.889 14.423-17.06 21.459-27.246c12.376-1.098 24.068-2.894 34.671-5.345a134.17 134.17 0 0 1 1.386 6.193ZM87.276 214.515c-7.882 2.783-14.16 2.863-17.955.675c-8.075-4.657-11.432-22.636-6.853-46.752a156.923 156.923 0 0 1 1.869-8.499c10.486 2.32 22.093 3.988 34.498 4.994c7.084 9.967 14.501 19.128 21.976 27.15a134.668 134.668 0 0 1-4.877 4.492c-9.933 8.682-19.886 14.842-28.658 17.94ZM50.35 144.747c-12.483-4.267-22.792-9.812-29.858-15.863c-6.35-5.437-9.555-10.836-9.555-15.216c0-9.322 13.897-21.212 37.076-29.293c2.813-.98 5.757-1.905 8.812-2.773c3.204 10.42 7.406 21.315 12.477 32.332c-5.137 11.18-9.399 22.249-12.634 32.792a134.718 134.718 0 0 1-6.318-1.979Zm12.378-84.26c-4.811-24.587-1.616-43.134 6.425-47.789c8.564-4.958 27.502 2.111 47.463 19.835a144.318 144.318 0 0 1 3.841 3.545c-7.438 7.987-14.787 17.08-21.808 26.988c-12.04 1.116-23.565 2.908-34.161 5.309a160.342 160.342 0 0 1-1.76-7.887Zm110.427 27.268a347.8 347.8 0 0 0-7.785-12.803c8.168 1.033 15.994 2.404 23.343 4.08c-2.206 7.072-4.956 14.465-8.193 22.045a381.151 381.151 0 0 0-7.365-13.322Zm-45.032-43.861c5.044 5.465 10.096 11.566 15.065 18.186a322.04 322.04 0 0 0-30.257-.006c4.974-6.559 10.069-12.652 15.192-18.18ZM82.802 87.83a323.167 323.167 0 0 0-7.227 13.238c-3.184-7.553-5.909-14.98-8.134-22.152c7.304-1.634 15.093-2.97 23.209-3.984a321.524 321.524 0 0 0-7.848 12.897Zm8.081 65.352c-8.385-.936-16.291-2.203-23.593-3.793c2.26-7.3 5.045-14.885 8.298-22.6a321.187 321.187 0 0 0 7.257 13.246c2.594 4.48 5.28 8.868 8.038 13.147Zm37.542 31.03c-5.184-5.592-10.354-11.779-15.403-18.433c4.902.192 9.899.29 14.978.29c5.218 0 10.376-.117 15.453-.343c-4.985 6.774-10.018 12.97-15.028 18.486Zm52.198-57.817c3.422 7.8 6.306 15.345 8.596 22.52c-7.422 1.694-15.436 3.058-23.88 4.071a382.417 382.417 0 0 0 7.859-13.026a347.403 347.403 0 0 0 7.425-13.565Zm-16.898 8.101a358.557 358.557 0 0 1-12.281 19.815a329.4 329.4 0 0 1-23.444.823c-7.967 0-15.716-.248-23.178-.732a310.202 310.202 0 0 1-12.513-19.846h.001a307.41 307.41 0 0 1-10.923-20.627a310.278 310.278 0 0 1 10.89-20.637l-.001.001a307.318 307.318 0 0 1 12.413-19.761c7.613-.576 15.42-.876 23.31-.876H128c7.926 0 15.743.303 23.354.883a329.357 329.357 0 0 1 12.335 19.695a358.489 358.489 0 0 1 11.036 20.54a329.472 329.472 0 0 1-11 20.722Zm22.56-122.124c8.572 4.944 11.906 24.881 6.52 51.026c-.344 1.668-.73 3.367-1.15 5.09c-10.622-2.452-22.155-4.275-34.23-5.408c-7.034-10.017-14.323-19.124-21.64-27.008a160.789 160.789 0 0 1 5.888-5.4c18.9-16.447 36.564-22.941 44.612-18.3ZM128 90.808c12.625 0 22.86 10.235 22.86 22.86s-10.235 22.86-22.86 22.86s-22.86-10.235-22.86-22.86s10.235-22.86 22.86-22.86Z"></path></svg>===== ./frontend/src/index.css =====
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  background: #f7f7f7;
+}
+
+h1 {
+  margin-bottom: 40px;
+}
+
+button {
+  margin-top: 10px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+===== ./frontend/src/main.jsx =====
+import { StrictMode } from 'react'
+import { createRoot } from 'react-dom/client'
+import './index.css'
+import App from './App.jsx'
+
+createRoot(document.getElementById('root')).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+)
+===== ./frontend/src/components/ArticleList.jsx =====
+import ArticleCard from "./ArticleCard";
+
+function ArticleList({ articles }) {
+  const originals = articles.filter((a) => a.is_updated === 0);
+  const updates = articles.filter((a) => a.is_updated === 1);
+
+  return (
+    <>
+      <h2>Original Articles</h2>
+      {originals.map((article) => (
+        <ArticleCard key={article.id} article={article} />
+      ))}
+
+      <h2 style={{ marginTop: 40 }}>Updated Articles</h2>
+      {updates.map((article) => (
+        <ArticleCard key={article.id} article={article} showReferences />
+      ))}
+    </>
+  );
+}
+
+export default ArticleList;
+===== ./frontend/src/components/ArticlePair.jsx =====
+import ArticleCard from "./ArticleCard";
+
+function ArticlePair({ pair }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        gap: 20,
+        marginBottom: 40,
+        alignItems: "stretch",
+      }}
+    >
+      <ArticleCard article={pair.original} label="Original Article" />
+
+      {pair.updated ? (
+        <ArticleCard
+          article={pair.updated}
+          label="Updated Article"
+          showReferences
+        />
+      ) : (
+        <div
+          style={{
+            flex: 1,
+            border: "1px dashed #ccc",
+            borderRadius: 8,
+            padding: 16,
+            color: "#777",
+          }}
+        >
+          <h3>Updated Article</h3>
+          <p>Not updated yet.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default ArticlePair;
+===== ./frontend/src/components/ArticleCard.jsx =====
+import { useState } from "react";
+
+function ArticleCard({ article, label, showReferences = false }) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (!article) return null;
+
+  // ---------- Normalise reference_links ----------
+  const refs = Array.isArray(article.reference_links)
+    ? article.reference_links
+    : typeof article.reference_links === "string"
+    ? article.reference_links
+        .split(/\s*,\s*/) // split on commas (optional spaces)
+        .filter(Boolean) // drop empty strings
+    : [];
+
+  return (
+    <div
+      style={{
+        flex: 1,
+        border: "1px solid #ddd",
+        borderRadius: 8,
+        padding: 16,
+        background: "#fff",
+      }}
+    >
+      <h3>{label}</h3>
+      <h4 style={{ marginTop: 0 }}>{article.title}</h4>
+
+      <p style={{ whiteSpace: "pre-line" }}>
+        {expanded ? article.content : article.content.slice(0, 400) + "..."}
+      </p>
+
+      <button onClick={() => setExpanded(!expanded)}>
+        {expanded ? "Show less" : "Read more"}
+      </button>
+
+      {/* ---------- Render references only when we have them ---------- */}
+      {showReferences && refs.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <h4>References</h4>
+          <ul>
+            {refs.map((link, idx) => (
+              <li key={idx}>
+                <a href={link} target="_blank" rel="noreferrer">
+                  {link}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default ArticleCard;
+===== ./frontend/src/App.jsx =====
+import { useEffect, useState } from "react";
+import axios from "axios";
+import ArticlePair from "./components/ArticlePair";
+
+const API_URL = "https://llm-rewrite-article.onrender.com/api/articles";
+
+function App() {
+  const [articles, setArticles] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function fetchArticles() {
+      try {
+        const res = await axios.get(API_URL);
+        setArticles(res.data);
+      } catch (err) {
+        console.error("Failed to fetch articles");
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    fetchArticles();
+  }, []);
+
+  if (loading) {
+    return <p style={{ padding: 20 }}>Loading articles...</p>;
+  }
+
+  // group by title
+  const grouped = {};
+
+  articles.forEach((article) => {
+    if (!grouped[article.title]) {
+      grouped[article.title] = {};
+    }
+
+    if (article.is_updated) {
+      grouped[article.title].updated = article;
+    } else {
+      grouped[article.title].original = article;
+    }
+  });
+
+  return (
+    <div style={{ maxWidth: 1200, margin: "0 auto", padding: 20 }}>
+      <h1>BeyondChats Article Comparison</h1>
+
+      {Object.entries(grouped).map(([title, pair]) => (
+        <ArticlePair key={title} pair={pair} />
+      ))}
+    </div>
+  );
+}
+
+export default App;
+===== ./frontend/public/vite.svg =====
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" aria-hidden="true" role="img" class="iconify iconify--logos" width="31.88" height="32" preserveAspectRatio="xMidYMid meet" viewBox="0 0 256 257"><defs><linearGradient id="IconifyId1813088fe1fbc01fb466" x1="-.828%" x2="57.636%" y1="7.652%" y2="78.411%"><stop offset="0%" stop-color="#41D1FF"></stop><stop offset="100%" stop-color="#BD34FE"></stop></linearGradient><linearGradient id="IconifyId1813088fe1fbc01fb467" x1="43.376%" x2="50.316%" y1="2.242%" y2="89.03%"><stop offset="0%" stop-color="#FFEA83"></stop><stop offset="8.333%" stop-color="#FFDD35"></stop><stop offset="100%" stop-color="#FFA800"></stop></linearGradient></defs><path fill="url(#IconifyId1813088fe1fbc01fb466)" d="M255.153 37.938L134.897 252.976c-2.483 4.44-8.862 4.466-11.382.048L.875 37.958c-2.746-4.814 1.371-10.646 6.827-9.67l120.385 21.517a6.537 6.537 0 0 0 2.322-.004l117.867-21.483c5.438-.991 9.574 4.796 6.877 9.62Z"></path><path fill="url(#IconifyId1813088fe1fbc01fb467)" d="M185.432.063L96.44 17.501a3.268 3.268 0 0 0-2.634 3.014l-5.474 92.456a3.268 3.268 0 0 0 3.997 3.378l24.777-5.718c2.318-.535 4.413 1.507 3.936 3.838l-7.361 36.047c-.495 2.426 1.782 4.5 4.151 3.78l15.304-4.649c2.372-.72 4.652 1.36 4.15 3.788l-11.698 56.621c-.732 3.542 3.979 5.473 5.943 2.437l1.313-2.028l72.516-144.72c1.215-2.423-.88-5.186-3.54-4.672l-25.505 4.922c-2.396.462-4.435-1.77-3.759-4.114l16.646-57.705c.677-2.35-1.37-4.583-3.769-4.113Z"></path></svg>===== ./frontend/README.md =====
+# React + Vite
+
+This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+
+Currently, two official plugins are available:
+
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+
+## React Compiler
+
+The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+
+## Expanding the ESLint configuration
+
+If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+===== ./frontend/eslint.config.js =====
+import js from '@eslint/js'
+import globals from 'globals'
+import reactHooks from 'eslint-plugin-react-hooks'
+import reactRefresh from 'eslint-plugin-react-refresh'
+import { defineConfig, globalIgnores } from 'eslint/config'
+
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{js,jsx}'],
+    extends: [
+      js.configs.recommended,
+      reactHooks.configs.flat.recommended,
+      reactRefresh.configs.vite,
+    ],
+    languageOptions: {
+      ecmaVersion: 2020,
+      globals: globals.browser,
+      parserOptions: {
+        ecmaVersion: 'latest',
+        ecmaFeatures: { jsx: true },
+        sourceType: 'module',
+      },
+    },
+    rules: {
+      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+    },
+  },
+])
+===== ./frontend/index.html =====
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>frontend</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+===== ./frontend/vite.config.js =====
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+// https://vite.dev/config/
+export default defineConfig({
+  plugins: [react()],
+})
+===== ./frontend/.env.example =====
+DB_URL=your_db_url
+===== ./frontend/package.json =====
+{
+  "name": "frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "axios": "^1.13.2",
+    "dotenv": "^17.2.3",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/react": "^19.2.5",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "eslint": "^9.39.1",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.4.24",
+    "globals": "^16.5.0",
+    "vite": "^7.2.4"
+  }
+}
+===== ./.gitignore =====
+# dependencies
+node_modules/
+
+# env
+.env
+backend/.env
+frontend/.env
+
+# logs
+*.log
+
+# OS files
+.DS_Store
+===== ./README.md =====
+## BeyondChats Assignment
+
+This repository contains my submission for the Full Stack Developer Intern assignment at BeyondChats.
+The goal of this project is to scrape blog articles, store them, update them using LLMs, and display
+both original and updated versions through a simple frontend.
+
+The work is divided into three phases as mentioned in the assignment.
+
+---
+
+## Live Demo
+
+Frontend: https://llm-rewrite-article.vercel.app/
+
+The live frontend displays original and LLM-updated articles side by side
+for direct comparison.
+
+---
+
+### Tech Stack
+
+- Node.js
+- Express.js
+- MySQL
+- React
+
+---
+
+### Project Structure
+
+The backend handles scraping, database operations, and automation logic.
+The frontend is a small React app used to display articles.
+
+---
+
+## Phase Breakdown
+
+### Phase 1: Scraping & CRUD
+
+- Scrapes the **5 oldest articles** from the BeyondChats blogs section.
+- Stores article data in a MySQL database.
+- Exposes CRUD APIs to manage articles.
+
+The scraper first identifies the **last page** of the blogs section and starts collecting articles
+from there. If the last page contains fewer than 5 articles, it fetches one additional previous page
+and combines results to complete the required count.
+
+When combining multiple pages, articles from previous pages are read **bottom-up** to preserve
+chronological order and ensure the oldest articles are selected.
+
+---
+
+### Phase 2: Article Updating Pipeline (Design)
+
+Phase 2 is implemented as a Node.js script that runs as a background/batch job.
+It is intentionally not exposed as an API endpoint, since the task is automation-oriented
+and easier to debug as a standalone script.
+
+The goal of this phase is to update existing articles by learning from similar
+articles that rank higher on search engines.
+
+---
+
+### Phase 3: Frontend
+
+A simple React-based frontend fetches articles from the backend APIs and displays
+both original and updated versions. The UI focuses on readability and responsiveness
+without unnecessary complexity.
+
+---
+
+#### High-level Flow
+
+1. Fetch original articles from the internal Articles API.
+2. For each article, search Google using the article title.
+3. From the search results, pick the first two links that point to blog/article pages
+   published by other websites.
+4. Scrape the main content from these two external articles.
+5. Send the original article and the reference articles to an LLM with a controlled prompt.
+6. Store the newly generated article using the existing CRUD APIs.
+7. Save reference links separately and display them at the bottom of the updated article.
+
+---
+
+#### Google Search Strategy
+
+Instead of scraping Google HTML directly (which is brittle and prone to blocking),
+a search API is used to fetch search results in a stable and predictable way.
+
+This keeps the focus of the assignment on content processing and automation logic,
+rather than dealing with anti-bot protections.
+
+Only results that look like blog or article pages are considered.
+
+Basic heuristics are applied to filter blog/article-style links from search results.
+
+External article content is lightly truncated to keep LLM input manageable.
+
+---
+
+#### LLM Usage
+
+The LLM is used as a controlled rewriting step, not as a content generator from scratch.
+
+The prompt is designed to:
+
+- Preserve the original intent of the article.
+- Improve clarity, structure, and depth.
+- Align tone and formatting with the reference articles.
+- Avoid copying or closely paraphrasing reference content.
+
+The LLM is instructed to return clean, structured markdown without inline citations.
+Reference links are added separately at the end of the article.
+
+The LLM is treated as a rewriting tool with strict constraints, not as a free-form content generator.
+
+---
+
+### LLM Provider Choice (Phase 2)
+
+Phase 2 requires calling an LLM API to rewrite existing articles based on reference content.
+The pipeline was intentionally designed to be provider-agnostic, with all LLM logic isolated
+inside a single service layer.
+
+#### Initial Approach
+
+The initial implementation used OpenAI-compatible APIs. However, during local development,
+the OpenAI free tier account had `$0` available credits, which resulted in consistent
+`insufficient_quota` errors. Even though the integration and retry logic were correct,
+requests were rejected before execution.
+
+A similar issue was encountered while testing Google Gemini, where valid API keys were loaded
+successfully but requests failed due to account-level API restrictions.
+
+These issues were related to **API access and billing**, not code correctness.
+
+---
+
+#### Final Decision: Groq
+
+To ensure the Phase 2 pipeline could run end-to-end during local testing, the LLM provider
+was switched to **Groq**, which offers a free and reliable API for OpenAI-compatible models
+(e.g. LLaMA 3.3).
+
+Reasons for choosing Groq:
+
+- Free-tier availability without billing setup
+- OpenAI-compatible API format (minimal code changes)
+- Fast and stable responses for long-form text rewriting
+
+The original `llm.service.js` was replaced with `groq.service.js`, while keeping the same
+function signature. This allowed the rest of the pipeline to remain unchanged.
+
+---
+
+#### Current Behavior
+
+- The Phase 2 script successfully:
+  - Fetches original articles
+  - Searches and scrapes reference articles
+  - Calls the Groq LLM to rewrite content
+  - Stores updated articles along with reference links
+- All external API calls include defensive checks and graceful failure handling
+- If any step fails for a specific article, the pipeline skips it and continues
+
+This approach ensures correctness, transparency, and a working end-to-end flow without
+relying on paid API credits.
+
+---
+
+#### Data Storage Approach
+
+Updated articles are stored using the same `articles` table:
+
+- Original articles have `is_updated = 0`
+- Updated articles have `is_updated = 1`
+- Reference links are stored as JSON and rendered separately on the frontend
+
+This avoids unnecessary schema complexity while keeping the relationship clear.
+
+---
+
+#### Error Handling & Trade-offs
+
+- If fewer than two suitable reference articles are found, the article is skipped.
+- Failures in one article do not stop the entire script.
+- The pipeline prioritizes clarity and determinism over aggressive automation.
+
+The goal of this phase is correctness and explainability, not maximum throughput.
+
+---
+
+### Data Flow Diagram
+
+The backend diagram below shows the high-level data flow across all three phases.
+It highlights how articles are scraped, stored, updated using an LLM,
+and finally displayed on the frontend.
+
+The focus of the diagram is clarity of data movement rather than
+low-level implementation details.
+
+![Backend Data Flow Diagram](./bdfd.png)
+
+The frontend acts as a presentation layer that fetches article data from the backend API.
+Upon page load, the React application sends a GET request to /api/articles.
+The backend responds with both original and updated articles.
+
+The frontend groups articles by title and displays the original and rewritten versions side by side, along with reference links.
+No data mutation occurs on the frontend.
+
+![Frontend Data Flow Diagram](./fdfd.png)
+
+### Phase 3: Frontend
+
+- React-based frontend to display articles.
+- Shows both original and updated versions.
+- Simple, responsive UI focused on readability rather than heavy styling.
+
+---
+
+### Database Setup
+
+1. Install MySQL locally.
+2. Create a database (for example: `beyondchats`).
+3. Run the schema file:
+
+   mysql -u root -p beyondchats < backend/db/schema.sql
+
+Database credentials are managed using environment variables.
+
+---
+
+### Design Notes & Decisions
+
+The scraper intentionally uses simple and defensive selectors to avoid overfitting to the
+current HTML structure of the blog.
+
+Pagination is handled explicitly to ensure the scraper always targets the oldest content, even
+when the last page contains fewer articles.
+
+I checked for an RSS/Atom feed as a cleaner way to fetch articles, but chose to scrape the blogs
+section directly to stay aligned with the assignment requirement of scraping from the last page.
+
+Backend code follows a basic serviceâ€“controller pattern to keep responsibilities separated and the
+logic easy to follow.
+
+Original articles are stored immutably. Updated articles are inserted
+as separate records, enabling clean side-by-side comparison without
+mutating source data.
+
+---
+
+### Notes
+
+The focus of this project is correctness, clarity, and following the assignment requirements without
+over-engineering.
+===== ./backup_articles.sql =====
+-- MySQL dump 10.13  Distrib 9.5.0, for Linux (x86_64)
+--
+-- Host: switchback.proxy.rlwy.net    Database: railway
+-- ------------------------------------------------------
+-- Server version	9.4.0
+
+/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
+/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
+/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
+/*!50503 SET NAMES utf8mb4 */;
+/*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;
+/*!40103 SET TIME_ZONE='+00:00' */;
+/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;
+/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
+/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
+/*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
+
+--
+-- Table structure for table `articles`
+--
+
+DROP TABLE IF EXISTS `articles`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `articles` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `title` varchar(255) NOT NULL,
+  `slug` varchar(255) DEFAULT NULL,
+  `content` longtext NOT NULL,
+  `source_url` text,
+  `is_updated` tinyint(1) DEFAULT '0',
+  `reference_links` json DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB AUTO_INCREMENT=11 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `articles`
+--
+
+LOCK TABLES `articles` WRITE;
+/*!40000 ALTER TABLE `articles` DISABLE KEYS */;
+INSERT INTO `articles` VALUES (1,'Chatbots Magic: Beginnerâ€™s Guidebook','chatbots-magic:-beginner\'s-guidebook','Choosing the right AI chatbot : A Guide			\n		\n				\n					\n			November 28, 2025		\n				\n			No Comments		\n				\n				\n			If youâ€™ve been looking for a chatbot lately, youâ€™ve probably felt one thing â€“Â â€œconfusion.â€ There are too many platforms in\n		\n				\n				\n				\n			\n		\n				\n				\n			\n				Google Ads: Are you wasting your money on clicks?			\n		\n				\n					\n			April 10, 2025		\n				\n			1 Comment		\n				\n				\n			Most businesses assume that if their ads are leading to high traffic, that means their ads ran successfully!They celebrate ad\n		\n				\n				\n				\n			\n		\n				\n				\n			\n				Should you trust AI in healthcare?			\n		\n				\n					\n			April 8, 2025		\n				\n			1 Comment		\n				\n				\n			AI in healthcare has become one of the most debated shifts in modern medicine. Some see it as revolutionary. Others,\n		\n				\n				\n				\n			\n		\n				\n				\n			\n				Why we are building yet another AI Chatbot			\n		\n				\n					\n			April 3, 2025		\n				\n			4 Comments		\n				\n				\n			When you read about us for the first time, your first thought might be â€œNot another AI chatbot startup please!â€','https://beyondchats.com/blogs/introduction-to-chatbots/',0,NULL,'2025-12-30 10:04:09','2025-12-30 10:04:09'),(2,'7 ways a Live Chatbot transforms customer interaction','7-ways-a-live-chatbot-transforms-customer-interaction','Choosing the right AI chatbot : A Guide			\n		\n				\n					\n			November 28, 2025		\n				\n			No Comments		\n				\n				\n			If youâ€™ve been looking for a chatbot lately, youâ€™ve probably felt one thing â€“Â â€œconfusion.â€ There are too many platforms in\n		\n				\n				\n				\n			\n		\n				\n				\n			\n				Google Ads: Are you wasting your money on clicks?			\n		\n				\n					\n			April 10, 2025		\n				\n			1 Comment		\n				\n				\n			Most businesses assume that if their ads are leading to high traffic, that means their ads ran successfully!They celebrate ad\n		\n				\n				\n				\n			\n		\n				\n				\n			\n				Should you trust AI in healthcare?			\n		\n				\n					\n			April 8, 2025		\n				\n			1 Comment		\n				\n				\n			AI in healthcare has become one of the most debated shifts in modern medicine. Some see it as revolutionary. Others,\n		\n				\n				\n				\n			\n		\n				\n				\n			\n				Why we are building yet another AI Chatbot			\n		\n				\n					\n			April 3, 2025		\n				\n			4 Comments		\n				\n				\n			When you read about us for the first time, your first thought might be â€œNot another AI chatbot startup please!â€','https://beyondchats.com/blogs/live-chatbot/',0,NULL,'2025-12-30 10:04:09','2025-12-30 10:04:09'),(3,'7 Clear Indicators Your Business Needs a Virtual Assistant','7-clear-indicators-your-business-needs-a-virtual-assistant','Choosing the right AI chatbot : A Guide			\n		\n				\n					\n			November 28, 2025		\n				\n			No Comments		\n				\n				\n			If youâ€™ve been looking for a chatbot lately, youâ€™ve probably felt one thing â€“Â â€œconfusion.â€ There are too many platforms in\n		\n				\n				\n				\n			\n		\n				\n				\n			\n				Google Ads: Are you wasting your money on clicks?			\n		\n				\n					\n			April 10, 2025		\n				\n			1 Comment		\n				\n				\n			Most businesses assume that if their ads are leading to high traffic, that means their ads ran successfully!They celebrate ad\n		\n				\n				\n				\n			\n		\n				\n				\n			\n				Should you trust AI in healthcare?			\n		\n				\n					\n			April 8, 2025		\n				\n			1 Comment		\n				\n				\n			AI in healthcare has become one of the most debated shifts in modern medicine. Some see it as revolutionary. Others,\n		\n				\n				\n				\n			\n		\n				\n				\n			\n				Why we are building yet another AI Chatbot			\n		\n				\n					\n			April 3, 2025		\n				\n			4 Comments		\n				\n				\n			When you read about us for the first time, your first thought might be â€œNot another AI chatbot startup please!â€','https://beyondchats.com/blogs/virtual-assistant/',0,NULL,'2025-12-30 10:04:09','2025-12-30 10:04:09'),(4,'10X Your Leads: How Chatbots Revolutionize Lead Generation','10x-your-leads:-how-chatbots-revolutionize-lead-generation','Choosing the right AI chatbot : A Guide			\n		\n				\n					\n			November 28, 2025		\n				\n			No Comments		\n				\n				\n			If youâ€™ve been looking for a chatbot lately, youâ€™ve probably felt one thing â€“Â â€œconfusion.â€ There are too many platforms in\n		\n				\n				\n				\n			\n		\n				\n				\n			\n				Google Ads: Are you wasting your money on clicks?			\n		\n				\n					\n			April 10, 2025		\n				\n			1 Comment		\n				\n				\n			Most businesses assume that if their ads are leading to high traffic, that means their ads ran successfully!They celebrate ad\n		\n				\n				\n				\n			\n		\n				\n				\n			\n				Should you trust AI in healthcare?			\n		\n				\n					\n			April 8, 2025		\n				\n			1 Comment		\n				\n				\n			AI in healthcare has become one of the most debated shifts in modern medicine. Some see it as revolutionary. Others,\n		\n				\n				\n				\n			\n		\n				\n				\n			\n				Why we are building yet another AI Chatbot			\n		\n				\n					\n			April 3, 2025		\n				\n			4 Comments		\n				\n				\n			When you read about us for the first time, your first thought might be â€œNot another AI chatbot startup please!â€','https://beyondchats.com/blogs/lead-generation-chatbots/',0,NULL,'2025-12-30 10:04:10','2025-12-30 10:04:10'),(5,'Can Chatbots Boost Small Business Growth?','can-chatbots-boost-small-business-growth','Choosing the right AI chatbot : A Guide			\n		\n				\n					\n			November 28, 2025		\n				\n			No Comments		\n				\n				\n			If youâ€™ve been looking for a chatbot lately, youâ€™ve probably felt one thing â€“Â â€œconfusion.â€ There are too many platforms in\n		\n				\n				\n				\n			\n		\n				\n				\n			\n				Google Ads: Are you wasting your money on clicks?			\n		\n				\n					\n			April 10, 2025		\n				\n			1 Comment		\n				\n				\n			Most businesses assume that if their ads are leading to high traffic, that means their ads ran successfully!They celebrate ad\n		\n				\n				\n				\n			\n		\n				\n				\n			\n				Should you trust AI in healthcare?			\n		\n				\n					\n			April 8, 2025		\n				\n			1 Comment		\n				\n				\n			AI in healthcare has become one of the most debated shifts in modern medicine. Some see it as revolutionary. Others,\n		\n				\n				\n				\n			\n		\n				\n				\n			\n				Why we are building yet another AI Chatbot			\n		\n				\n					\n			April 3, 2025		\n				\n			4 Comments		\n				\n				\n			When you read about us for the first time, your first thought might be â€œNot another AI chatbot startup please!â€','https://beyondchats.com/blogs/chatbots-for-small-business-growth/',0,NULL,'2025-12-30 10:04:10','2025-12-30 10:04:10'),(6,'10X Your Leads: How Chatbots Revolutionize Lead Generation',NULL,'## Choosing the Right AI Chatbot: A Comprehensive Guide\n### Introduction to AI Chatbots\n\nIn today\'s digital landscape, businesses are constantly looking for innovative ways to engage with their customers and improve their online presence. One technology that has gained significant attention in recent years is Artificial Intelligence (AI) chatbots. With numerous platforms available, selecting the right AI chatbot can be a daunting task, often leaving businesses feeling confused and uncertain about their decision.\n\n### Understanding the Importance of AI Chatbots\n\nAI chatbots have revolutionized the way businesses approach customer engagement and lead generation. They offer 24/7 availability, instant responses, and personalized interactions, creating a sense of satisfaction and engagement among potential leads. By automating routine tasks, AI chatbots enable businesses to focus on building relationships and closing deals, ultimately driving growth and success.\n\n### Key Considerations for Choosing an AI Chatbot\n\nWhen selecting an AI chatbot, there are several key considerations to keep in mind. These include:\n\n* **Availability and Response Time**: Can the chatbot operate round the clock and provide instant responses to potential leads?\n* **Personalization**: Can the chatbot offer personalized interactions and tailored messages to each prospect?\n* **Integration**: Can the chatbot integrate with existing systems and tools, such as Customer Relationship Management (CRM) software?\n* **Scalability**: Can the chatbot handle a large volume of conversations and scale with the business?\n\n### Benefits of AI Chatbots in Lead Generation\n\nAI chatbots have numerous benefits in lead generation, including:\n\n* **Accelerated Lead Qualification**: AI chatbots can quickly qualify potential leads, allowing businesses to focus on high-quality prospects.\n* **Continuous Nurturing**: AI chatbots can nurture leads across multiple channels, ensuring that prospects remain engaged and interested.\n* **Higher Conversion Accuracy**: AI chatbots can analyze prospect behavior and provide predictive analytics, enabling businesses to make data-driven decisions.\n\n### Implementing an AI Chatbot Strategy\n\nTo implement an effective AI chatbot strategy, businesses should consider the following:\n\n* **Define Clear Goals**: Establish clear goals and objectives for the chatbot, such as lead generation or customer support.\n* **Choose the Right Platform**: Select a platform that integrates with existing systems and tools, and offers scalability and flexibility.\n* **Train and Test**: Train and test the chatbot to ensure it can handle a variety of conversations and scenarios.\n\nBy considering these factors and implementing an effective AI chatbot strategy, businesses can unlock the full potential of AI chatbots and drive growth, success, and customer satisfaction.','https://beyondchats.com/blogs/lead-generation-chatbots/',1,'[\"https://beyondchats.com/blogs/lead-generation-chatbots/\", \"https://monday.com/blog/crm-and-sales/ai-lead-management/\"]','2025-12-30 10:41:50','2025-12-30 10:41:50'),(7,'Can Chatbots Boost Small Business Growth?',NULL,'## Choosing the Right AI Chatbot: A Comprehensive Guide\nWith the numerous AI chatbot platforms available, selecting the right one can be a daunting task. The sheer number of options can lead to confusion, making it challenging to determine which chatbot best suits your business needs. In this article, we will explore the key factors to consider when choosing an AI chatbot, helping you make an informed decision.\n\n### Understanding Your Business Needs\nBefore selecting a chatbot, it\'s essential to understand your business requirements. What are your goals and objectives? What kind of support do your customers need? Are you looking to automate simple tasks, or do you need a more complex solution? By identifying your business needs, you can narrow down the options and choose a chatbot that aligns with your goals.\n\n### Evaluating Chatbot Platforms\nWhen evaluating chatbot platforms, consider the following factors:\n* **Ease of use**: How user-friendly is the platform? Can you easily integrate it with your existing systems?\n* **Customization**: Can you customize the chatbot to fit your brand and business needs?\n* **Scalability**: Will the chatbot be able to handle a large volume of conversations?\n* **Integration**: Can the chatbot integrate with other tools and platforms you use?\n\n### Key Features to Consider\nSome key features to consider when choosing an AI chatbot include:\n* **Natural Language Processing (NLP)**: Can the chatbot understand and respond to customer inquiries in a natural, human-like way?\n* **Machine Learning**: Can the chatbot learn from customer interactions and improve over time?\n* **Security**: Is the chatbot secure and compliant with data protection regulations?\n* **Analytics**: Can the chatbot provide insights and analytics to help you improve customer support?\n\n### Implementing and Optimizing Your Chatbot\nOnce you\'ve selected a chatbot, it\'s essential to implement and optimize it correctly. This includes:\n* **Training**: Train your chatbot to handle common customer inquiries and scenarios.\n* **Testing**: Test your chatbot to ensure it\'s working correctly and providing accurate responses.\n* **Monitoring**: Continuously monitor your chatbot\'s performance and make adjustments as needed.\n\nBy considering these factors and following these guidelines, you can choose the right AI chatbot for your business and provide exceptional customer support. Remember, the key to success lies in understanding your business needs, evaluating chatbot platforms, and implementing and optimizing your chatbot correctly.','https://beyondchats.com/blogs/chatbots-for-small-business-growth/',1,'[\"https://beyondchats.com/blogs/chatbots-for-small-business-growth/\", \"https://forethought.ai/blog/chatbot-for-small-business\"]','2025-12-30 10:42:02','2025-12-30 10:42:02'),(8,'Chatbots Magic: Beginnerâ€™s Guidebook',NULL,'## Choosing the Right AI Chatbot: A Comprehensive Guide\nWith the numerous chatbot platforms available, selecting the right one can be a daunting task. The sheer number of options can lead to confusion, making it challenging to determine which chatbot best suits your needs. In this article, we will delve into the world of AI chatbots, exploring their benefits, functionality, and the key factors to consider when choosing the ideal chatbot for your business.\n\n### What is an AI Chatbot?\nAn AI chatbot is a computer program designed to simulate natural language conversations with users. It is equipped with artificial intelligence, enabling it to understand and respond to queries, guide users through tasks, and engage in meaningful conversations. Essentially, an AI chatbot is a personal assistant available 24/7, providing users with a unique and personalized experience.\n\n### Benefits of AI Chatbots\nAI chatbots have revolutionized the way businesses interact with their customers. They offer a range of benefits, including:\n\n* Enhanced customer experience: AI chatbots provide users with instant responses to their queries, improving customer satisfaction and loyalty.\n* Increased efficiency: Chatbots can handle multiple conversations simultaneously, reducing the workload of human customer support agents.\n* Cost savings: Implementing a chatbot can significantly reduce the costs associated with customer support and service.\n\n### Key Factors to Consider When Choosing an AI Chatbot\nWith so many chatbot platforms available, it is essential to consider the following factors when selecting the right one for your business:\n\n* **Functionality**: Determine the specific functions you require from your chatbot, such as customer support, lead generation, or transactional capabilities.\n* **Integration**: Ensure the chatbot can integrate seamlessly with your existing systems and infrastructure.\n* **Customization**: Consider the level of customization required to align the chatbot with your brand\'s tone and personality.\n* **Scalability**: Choose a chatbot that can grow with your business, handling increased traffic and user engagement.\n\n### Creating a Meaningful User Experience\nTo create a meaningful user experience, it is crucial to understand your website\'s unique needs and leverage chatbots to provide personalized interactions. This can be achieved by:\n\n* **Analyzing user behavior**: Understand how users interact with your website and identify areas where a chatbot can enhance their experience.\n* **Developing a conversational strategy**: Create a conversational strategy that aligns with your brand\'s tone and personality, ensuring a consistent user experience.\n* **Continuously monitoring and improving**: Regularly monitor user interactions with the chatbot and make improvements to ensure the chatbot continues to meet the evolving needs of your users.\n\nBy considering these factors and creating a comprehensive strategy, you can choose the right AI chatbot for your business and provide a unique and personalized experience for your users.','https://beyondchats.com/blogs/introduction-to-chatbots/',1,'[\"https://beyondchats.com/blogs/introduction-to-chatbots/\", \"https://www.amazon.com/Chatbot-Magic-Beginners-Creating-Chatbots/dp/B0F99NWJBN\"]','2025-12-30 10:42:26','2025-12-30 10:42:26'),(9,'7 ways a Live Chatbot transforms customer interaction',NULL,'## Choosing the Right AI Chatbot: A Comprehensive Guide\nIn today\'s digital landscape, businesses are constantly seeking innovative ways to enhance customer interaction and satisfaction. One such solution gaining momentum is the use of AI chatbots. With numerous platforms available, selecting the right AI chatbot can be a daunting task, leaving many feeling confused and uncertain.\n\n### Understanding AI Chatbots\nAI chatbots are artificial intelligence-powered conversational agents designed to engage with users in real-time through a chat interface. Unlike traditional chatbots, AI chatbots are equipped to handle immediate queries, provide instant responses, and simulate natural human conversations. They have the potential to transform the landscape of customer support, offering personalized experiences and streamlining support services.\n\n### Benefits of AI Chatbots\nThe integration of AI chatbots can have a significant impact on customer satisfaction and experience. By providing real-time assistance and personalized interactions, AI chatbots can help businesses build strong relationships with their customers. Some of the key benefits of AI chatbots include:\n\n* Enhanced customer satisfaction and experience\n* Streamlined support services and reduced response times\n* Personalized interactions and tailored solutions\n* Increased efficiency and reduced operational costs\n\n### Key Considerations for Selecting an AI Chatbot\nWhen choosing an AI chatbot, there are several key considerations to keep in mind. These include:\n\n* **Scalability and flexibility**: Can the chatbot handle a high volume of conversations and adapt to changing business needs?\n* **Integration and compatibility**: Can the chatbot integrate with existing systems and platforms, such as CRM and customer support software?\n* **Security and data protection**: Does the chatbot prioritize data security and protection, ensuring sensitive customer information is safeguarded?\n* **Customization and personalization**: Can the chatbot be tailored to meet specific business needs and provide personalized interactions?\n\n### Best Practices for Implementing AI Chatbots\nTo ensure successful implementation and maximize the benefits of AI chatbots, businesses should follow best practices such as:\n\n* **Clear goals and objectives**: Define clear goals and objectives for the chatbot, such as improving customer satisfaction or reducing response times.\n* **Thorough testing and training**: Test and train the chatbot thoroughly to ensure it can handle a variety of conversations and scenarios.\n* **Ongoing monitoring and evaluation**: Continuously monitor and evaluate the chatbot\'s performance, making adjustments and improvements as needed.\n\nBy understanding the benefits and considerations of AI chatbots, businesses can make informed decisions and select the right chatbot to meet their unique needs and goals. With the right AI chatbot in place, businesses can enhance customer satisfaction, streamline support services, and drive long-term success.','https://beyondchats.com/blogs/live-chatbot/',1,'[\"https://beyondchats.com/blogs/live-chatbot/\", \"https://snapengage.com/7-ways-live-chat-improves-customer-satisfaction/\"]','2025-12-30 10:42:42','2025-12-30 10:42:42'),(10,'7 Clear Indicators Your Business Needs a Virtual Assistant',NULL,'## Choosing the Right AI Chatbot: A Comprehensive Guide\n### Introduction to AI Chatbots\n\nIn recent years, the market for AI chatbots has exploded, leaving many businesses feeling overwhelmed and confused about how to choose the right one. With so many platforms available, it\'s essential to understand what to look for in an AI chatbot and how it can benefit your business. In this article, we\'ll explore the key factors to consider when selecting an AI chatbot and provide guidance on how to make an informed decision.\n\n### Understanding Your Business Needs\n\nBefore choosing an AI chatbot, it\'s crucial to understand your business needs and goals. What problems do you want the chatbot to solve? What kind of support do you need? Are you looking to improve customer service, increase sales, or streamline operations? By identifying your specific needs, you can narrow down your options and find a chatbot that aligns with your business objectives.\n\n### Evaluating Chatbot Platforms\n\nWhen evaluating chatbot platforms, consider the following factors:\n\n* **Functionality**: What features does the chatbot offer? Does it have natural language processing (NLP) capabilities, sentiment analysis, or integration with other tools?\n* **Customization**: Can the chatbot be customized to fit your brand and business needs?\n* **Scalability**: Will the chatbot be able to handle a large volume of conversations and grow with your business?\n* **Integration**: Does the chatbot integrate with your existing systems and tools?\n\n### Benefits of AI Chatbots\n\nAI chatbots can bring numerous benefits to your business, including:\n\n* **Improved customer service**: Chatbots can provide 24/7 support, answering frequent questions and helping customers with basic inquiries.\n* **Increased efficiency**: Chatbots can automate routine tasks, freeing up staff to focus on more complex and high-value tasks.\n* **Enhanced user experience**: Chatbots can provide personalized interactions, helping to build trust and loyalty with your customers.\n\n### Implementing an AI Chatbot\n\nOnce you\'ve chosen the right AI chatbot for your business, it\'s essential to implement it effectively. This includes:\n\n* **Training and testing**: Ensure that the chatbot is properly trained and tested to handle various scenarios and conversations.\n* **Monitoring and evaluation**: Continuously monitor and evaluate the chatbot\'s performance, making adjustments as needed.\n* **Staff training**: Educate your staff on how to work with the chatbot, ensuring a seamless handover of conversations and tasks.\n\nBy following these guidelines and considering your business needs, you can choose the right AI chatbot and implement it effectively, leading to improved customer service, increased efficiency, and enhanced user experience.','https://beyondchats.com/blogs/virtual-assistant/',1,'[\"https://beyondchats.com/blogs/virtual-assistant/\", \"https://www.linkedin.com/pulse/10-clear-signs-its-time-hire-virtual-assistant-your-business-lacaba-bn5fe\"]','2025-12-30 10:43:11','2025-12-30 10:43:11');
+/*!40000 ALTER TABLE `articles` ENABLE KEYS */;
+UNLOCK TABLES;
+/*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
+
+/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
+/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
+/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;
+/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
+/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
+/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
+/*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
+
+-- Dump completed on 2025-12-30 17:02:40
+===== ./bdfd.png =====
+‰PNG
+
+   IHDR  
+  £   CGJÆ  CutEXtmxfile %3Cmxfile%20host%3D%22app.diagrams.net%22%20agent%3D%22Mozilla%2F5.0%20(X11%3B%20Linux%20x86_64)%20AppleWebKit%2F537.36%20(KHTML%2C%20like%20Gecko)%20Chrome%2F143.0.0.0%20Safari%2F537.36%22%20version%3D%2229.2.9%22%20scale%3D%221%22%20border%3D%220%22%3E%0A%20%20%3Cdiagram%20name%3D%22Page-1%22%20id%3D%22slwWIP_J8nOvaJ2keLyM%22%3E%0A%20%20%20%20%3CmxGraphModel%20dx%3D%22345%22%20dy%3D%22549%22%20grid%3D%221%22%20gridSize%3D%2210%22%20guides%3D%221%22%20tooltips%3D%221%22%20connect%3D%221%22%20arrows%3D%221%22%20fold%3D%221%22%20page%3D%221%22%20pageScale%3D%221%22%20pageWidth%3D%22850%22%20pageHeight%3D%221100%22%20math%3D%220%22%20shadow%3D%220%22%3E%0A%20%20%20%20%20%20%3Croot%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%220%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%221%22%20parent%3D%220%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-5%22%20parent%3D%221%22%20style%3D%22rounded%3D0%3BwhiteSpace%3Dwrap%3Bhtml%3D1%3B%22%20value%3D%22%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2280%22%20width%3D%22160%22%20x%3D%22280%22%20y%3D%2210%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-7%22%20parent%3D%221%22%20style%3D%22text%3BstrokeColor%3Dnone%3BfillColor%3Dnone%3Bhtml%3D1%3Balign%3Dcenter%3BverticalAlign%3Dmiddle%3BwhiteSpace%3Dwrap%3Brounded%3D0%3BfontSize%3D16%3B%22%20value%3D%22BeyondChats%20Blog%20(Source)%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2280%22%20width%3D%22160%22%20x%3D%22280%22%20y%3D%2210%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-8%22%20edge%3D%221%22%20parent%3D%221%22%20source%3D%22PvhEfkY2jq6N01o4uBjW-7%22%20style%3D%22endArrow%3Dclassic%3Bhtml%3D1%3Brounded%3D0%3BfontSize%3D12%3BstartSize%3D8%3BendSize%3D8%3Bcurved%3D1%3BexitX%3D0.5%3BexitY%3D1%3BexitDx%3D0%3BexitDy%3D0%3B%22%20value%3D%22%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2250%22%20relative%3D%221%22%20width%3D%2250%22%20as%3D%22geometry%22%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22490%22%20y%3D%22420%22%20as%3D%22sourcePoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22360%22%20y%3D%22130%22%20as%3D%22targetPoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%3C%2FmxGeometry%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-9%22%20parent%3D%221%22%20style%3D%22rounded%3D0%3BwhiteSpace%3Dwrap%3Bhtml%3D1%3B%22%20value%3D%22%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2280%22%20width%3D%22160%22%20x%3D%22280%22%20y%3D%22130%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-10%22%20parent%3D%221%22%20style%3D%22text%3BstrokeColor%3Dnone%3BfillColor%3Dnone%3Bhtml%3D1%3Balign%3Dcenter%3BverticalAlign%3Dmiddle%3BwhiteSpace%3Dwrap%3Brounded%3D0%3BfontSize%3D16%3B%22%20value%3D%22Phase%201%20Scraper%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2280%22%20width%3D%22160%22%20x%3D%22280%22%20y%3D%22130%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-11%22%20parent%3D%221%22%20style%3D%22rounded%3D0%3BwhiteSpace%3Dwrap%3Bhtml%3D1%3B%22%20value%3D%22%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2280%22%20width%3D%22160%22%20x%3D%22280%22%20y%3D%22250%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-12%22%20parent%3D%221%22%20style%3D%22text%3BstrokeColor%3Dnone%3BfillColor%3Dnone%3Bhtml%3D1%3Balign%3Dcenter%3BverticalAlign%3Dmiddle%3BwhiteSpace%3Dwrap%3Brounded%3D0%3BfontSize%3D16%3B%22%20value%3D%22Articles%20API%20(CRUD%20-%20Node.js)%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2280%22%20width%3D%22160%22%20x%3D%22280%22%20y%3D%22250%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-13%22%20edge%3D%221%22%20parent%3D%221%22%20source%3D%22PvhEfkY2jq6N01o4uBjW-10%22%20style%3D%22endArrow%3Dclassic%3Bhtml%3D1%3Brounded%3D0%3BfontSize%3D12%3BstartSize%3D8%3BendSize%3D8%3Bcurved%3D1%3BexitX%3D0.5%3BexitY%3D1%3BexitDx%3D0%3BexitDy%3D0%3B%22%20value%3D%22%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2250%22%20relative%3D%221%22%20width%3D%2250%22%20as%3D%22geometry%22%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22490%22%20y%3D%22420%22%20as%3D%22sourcePoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22360%22%20y%3D%22250%22%20as%3D%22targetPoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%3C%2FmxGeometry%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-14%22%20parent%3D%221%22%20style%3D%22rounded%3D0%3BwhiteSpace%3Dwrap%3Bhtml%3D1%3B%22%20value%3D%22%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2280%22%20width%3D%22160%22%20x%3D%22280%22%20y%3D%22370%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-15%22%20parent%3D%221%22%20style%3D%22text%3BstrokeColor%3Dnone%3BfillColor%3Dnone%3Bhtml%3D1%3Balign%3Dcenter%3BverticalAlign%3Dmiddle%3BwhiteSpace%3Dwrap%3Brounded%3D0%3BfontSize%3D16%3B%22%20value%3D%22Phase%202%20Script%20updateArticles.js%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2280%22%20width%3D%22160%22%20x%3D%22280%22%20y%3D%22370%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-18%22%20parent%3D%221%22%20style%3D%22rounded%3D0%3BwhiteSpace%3Dwrap%3Bhtml%3D1%3B%22%20value%3D%22%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2280%22%20width%3D%22160%22%20x%3D%22360%22%20y%3D%22490%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-19%22%20parent%3D%221%22%20style%3D%22rounded%3D0%3BwhiteSpace%3Dwrap%3Bhtml%3D1%3B%22%20value%3D%22%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2280%22%20width%3D%22160%22%20x%3D%22360%22%20y%3D%22610%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-20%22%20parent%3D%221%22%20style%3D%22rounded%3D0%3BwhiteSpace%3Dwrap%3Bhtml%3D1%3B%22%20value%3D%22%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2280%22%20width%3D%22160%22%20x%3D%22360%22%20y%3D%22730%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-22%22%20edge%3D%221%22%20parent%3D%221%22%20source%3D%22PvhEfkY2jq6N01o4uBjW-12%22%20style%3D%22endArrow%3Dclassic%3Bhtml%3D1%3Brounded%3D0%3BfontSize%3D12%3BstartSize%3D8%3BendSize%3D8%3Bcurved%3D1%3BexitX%3D0.5%3BexitY%3D1%3BexitDx%3D0%3BexitDy%3D0%3BentryX%3D0.5%3BentryY%3D0%3BentryDx%3D0%3BentryDy%3D0%3B%22%20target%3D%22PvhEfkY2jq6N01o4uBjW-15%22%20value%3D%22%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2250%22%20relative%3D%221%22%20width%3D%2250%22%20as%3D%22geometry%22%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22400%22%20y%3D%22580%22%20as%3D%22sourcePoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22450%22%20y%3D%22530%22%20as%3D%22targetPoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%3C%2FmxGeometry%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-24%22%20parent%3D%221%22%20style%3D%22text%3BstrokeColor%3Dnone%3BfillColor%3Dnone%3Bhtml%3D1%3Balign%3Dcenter%3BverticalAlign%3Dmiddle%3BwhiteSpace%3Dwrap%3Brounded%3D0%3BfontSize%3D16%3B%22%20value%3D%22Articles%20API%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2250%22%20width%3D%22100%22%20x%3D%22425%22%20y%3D%22830%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-25%22%20edge%3D%221%22%20parent%3D%221%22%20style%3D%22endArrow%3Dclassic%3Bhtml%3D1%3Brounded%3D0%3BfontSize%3D12%3BstartSize%3D8%3BendSize%3D8%3Bcurved%3D1%3BexitX%3D0.75%3BexitY%3D1%3BexitDx%3D0%3BexitDy%3D0%3BentryX%3D0.25%3BentryY%3D0%3BentryDx%3D0%3BentryDy%3D0%3B%22%20target%3D%22PvhEfkY2jq6N01o4uBjW-18%22%20value%3D%22%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2250%22%20relative%3D%221%22%20width%3D%2250%22%20as%3D%22geometry%22%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22400%22%20y%3D%22450.0000000000002%22%20as%3D%22sourcePoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22450%22%20y%3D%22410%22%20as%3D%22targetPoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%3C%2FmxGeometry%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-26%22%20edge%3D%221%22%20parent%3D%221%22%20source%3D%22PvhEfkY2jq6N01o4uBjW-18%22%20style%3D%22endArrow%3Dclassic%3Bhtml%3D1%3Brounded%3D0%3BfontSize%3D12%3BstartSize%3D8%3BendSize%3D8%3Bcurved%3D1%3BexitX%3D0.5%3BexitY%3D1%3BexitDx%3D0%3BexitDy%3D0%3BentryX%3D0.5%3BentryY%3D0%3BentryDx%3D0%3BentryDy%3D0%3B%22%20target%3D%22PvhEfkY2jq6N01o4uBjW-19%22%20value%3D%22%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2250%22%20relative%3D%221%22%20width%3D%2250%22%20as%3D%22geometry%22%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22400%22%20y%3D%22460%22%20as%3D%22sourcePoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22450%22%20y%3D%22410%22%20as%3D%22targetPoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%3C%2FmxGeometry%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-27%22%20edge%3D%221%22%20parent%3D%221%22%20source%3D%22PvhEfkY2jq6N01o4uBjW-19%22%20style%3D%22endArrow%3Dclassic%3Bhtml%3D1%3Brounded%3D0%3BfontSize%3D12%3BstartSize%3D8%3BendSize%3D8%3Bcurved%3D1%3BexitX%3D0.5%3BexitY%3D1%3BexitDx%3D0%3BexitDy%3D0%3BentryX%3D0.5%3BentryY%3D0%3BentryDx%3D0%3BentryDy%3D0%3B%22%20target%3D%22PvhEfkY2jq6N01o4uBjW-20%22%20value%3D%22%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2250%22%20relative%3D%221%22%20width%3D%2250%22%20as%3D%22geometry%22%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22400%22%20y%3D%22460%22%20as%3D%22sourcePoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22450%22%20y%3D%22410%22%20as%3D%22targetPoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%3C%2FmxGeometry%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-30%22%20edge%3D%221%22%20parent%3D%221%22%20style%3D%22endArrow%3Dnone%3Bdashed%3D1%3Bhtml%3D1%3Brounded%3D0%3BfontSize%3D12%3BstartSize%3D8%3BendSize%3D8%3Bcurved%3D1%3BexitX%3D0.25%3BexitY%3D1%3BexitDx%3D0%3BexitDy%3D0%3B%22%20value%3D%22%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2250%22%20relative%3D%221%22%20width%3D%2250%22%20as%3D%22geometry%22%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22320%22%20y%3D%22450.0000000000002%22%20as%3D%22sourcePoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22320%22%20y%3D%22850%22%20as%3D%22targetPoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%3C%2FmxGeometry%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-32%22%20edge%3D%221%22%20parent%3D%221%22%20style%3D%22endArrow%3Dclassic%3Bhtml%3D1%3Brounded%3D0%3BfontSize%3D12%3BstartSize%3D8%3BendSize%3D8%3Bcurved%3D1%3B%22%20target%3D%22PvhEfkY2jq6N01o4uBjW-24%22%20value%3D%22%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2250%22%20relative%3D%221%22%20width%3D%2250%22%20as%3D%22geometry%22%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22320%22%20y%3D%22855%22%20as%3D%22sourcePoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22450%22%20y%3D%22410%22%20as%3D%22targetPoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%3C%2FmxGeometry%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-33%22%20edge%3D%221%22%20parent%3D%221%22%20source%3D%22PvhEfkY2jq6N01o4uBjW-24%22%20style%3D%22edgeStyle%3Dnone%3Bcurved%3D1%3Brounded%3D0%3BorthogonalLoop%3D1%3BjettySize%3Dauto%3Bhtml%3D1%3BexitX%3D0%3BexitY%3D0.5%3BexitDx%3D0%3BexitDy%3D0%3BfontSize%3D12%3BstartSize%3D8%3BendSize%3D8%3B%22%20target%3D%22PvhEfkY2jq6N01o4uBjW-24%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20relative%3D%221%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-34%22%20edge%3D%221%22%20parent%3D%221%22%20source%3D%22PvhEfkY2jq6N01o4uBjW-20%22%20style%3D%22endArrow%3Dclassic%3Bhtml%3D1%3Brounded%3D0%3BfontSize%3D12%3BstartSize%3D8%3BendSize%3D8%3Bcurved%3D1%3BexitX%3D0.5%3BexitY%3D1%3BexitDx%3D0%3BexitDy%3D0%3B%22%20value%3D%22%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2250%22%20relative%3D%221%22%20width%3D%2250%22%20as%3D%22geometry%22%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22400%22%20y%3D%22460%22%20as%3D%22sourcePoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22440%22%20y%3D%22840%22%20as%3D%22targetPoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%3C%2FmxGeometry%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-35%22%20parent%3D%221%22%20style%3D%22text%3BstrokeColor%3Dnone%3BfillColor%3Dnone%3Bhtml%3D1%3Balign%3Dcenter%3BverticalAlign%3Dmiddle%3BwhiteSpace%3Dwrap%3Brounded%3D0%3BfontSize%3D16%3B%22%20value%3D%22MySQL%20Database%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2230%22%20width%3D%22140%22%20x%3D%22405%22%20y%3D%22910%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-36%22%20edge%3D%221%22%20parent%3D%221%22%20source%3D%22PvhEfkY2jq6N01o4uBjW-24%22%20style%3D%22endArrow%3Dclassic%3Bhtml%3D1%3Brounded%3D0%3BfontSize%3D12%3BstartSize%3D8%3BendSize%3D8%3Bcurved%3D1%3BexitX%3D0.15%3BexitY%3D0.8%3BexitDx%3D0%3BexitDy%3D0%3BexitPerimeter%3D0%3BentryX%3D0.25%3BentryY%3D0%3BentryDx%3D0%3BentryDy%3D0%3B%22%20target%3D%22PvhEfkY2jq6N01o4uBjW-35%22%20value%3D%22%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2250%22%20relative%3D%221%22%20width%3D%2250%22%20as%3D%22geometry%22%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CArray%20as%3D%22points%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22400%22%20y%3D%22460%22%20as%3D%22sourcePoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22450%22%20y%3D%22907%22%20as%3D%22targetPoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%3C%2FmxGeometry%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-37%22%20parent%3D%221%22%20style%3D%22text%3BstrokeColor%3Dnone%3BfillColor%3Dnone%3Bhtml%3D1%3Balign%3Dcenter%3BverticalAlign%3Dmiddle%3BwhiteSpace%3Dwrap%3Brounded%3D0%3BfontSize%3D16%3B%22%20value%3D%22Serp%20API%20(Google)%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2280%22%20width%3D%22160%22%20x%3D%22360%22%20y%3D%22490%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-38%22%20parent%3D%221%22%20style%3D%22text%3BstrokeColor%3Dnone%3BfillColor%3Dnone%3Bhtml%3D1%3Balign%3Dcenter%3BverticalAlign%3Dmiddle%3BwhiteSpace%3Dwrap%3Brounded%3D0%3BfontSize%3D16%3B%22%20value%3D%22External%20Blog%20Sites%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2280%22%20width%3D%22160%22%20x%3D%22360%22%20y%3D%22610%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22PvhEfkY2jq6N01o4uBjW-39%22%20parent%3D%221%22%20style%3D%22text%3BstrokeColor%3Dnone%3BfillColor%3Dnone%3Bhtml%3D1%3Balign%3Dcenter%3BverticalAlign%3Dmiddle%3BwhiteSpace%3Dwrap%3Brounded%3D0%3BfontSize%3D16%3B%22%20value%3D%22Groq%20LLM%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2280%22%20width%3D%22160%22%20x%3D%22360%22%20y%3D%22730%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%3C%2Froot%3E%0A%20%20%20%20%3C%2FmxGraphModel%3E%0A%20%20%3C%2Fdiagram%3E%0A%3C%2Fmxfile%3E%0ArAÏ   IDATxìœ5ûÇŸ)îÅZÜİµ¸ë‹[q—âN·¼üqxqwwwmq§¸Cq‡âÿç:×¹íîİŞİîNvïwŸ<›L’É$¿™üæÉ“L®G¡PøG"òzÌ¬`ú‹Ô°ÿş&õ~xö$@ ŠÆ¨ªj)„@^ˆ(òB^×ÃhODÑwIu9# ¢ÈùèòB Q4Â]R…@Îˆ(r¾º|mPéÕA@DQUŠhjDM}{Õ8!PDÕÁQ¥¦F@DÑÔ··¶SéİE÷¹×j©è4"ŠNC§…@÷A@DÑ}îµZ*:€ˆ¢ÓĞÕöD•.bB@DÓİP]„@¤ˆ("½1ª–ˆ	ELwCu‘"Ğ-‰"Ò{¡j	hQD{kT1!"Šxî…j"¢E@Dí­QÅ„@<T(âišj"„@µèQL<ñÄ–$I‹L0ÁÖ§O;å”SìÏ?ÿ¬Vk^N¿~ıl¾ùæá:ƒ²m¶ÙÆæšk.wÜqmé¥—¶£:Ê¾ûî»–¼\pAhí÷$~?Fe›uÖYmË-·´Áƒ·Ô™ÀSLÚBX"ÚC KDAám´‘=øàƒAN:é$›|òÉm=ö°½÷Ş›ä†•í·ß>ŞÈ#lûï¿¿]|ñÅ¶à‚Úi§f+¯¼²ığÃUmÛ«¯¾j3Í4SUÊ¼í¶ÛÂı¸ã;lƒ6°Ç{,´eÈ!U)_…t?ºL¼™ú¸l±Åvå•WÚúë¯owß}wÃ¢IG;÷ÜsíÔSOµ³Ï>Û6İtS[guìøã·ûï¿?¼ÿûßÿVµ}Ï>ûlÕÊ[|ñÅ1¬°Â
+6`À »öÚkƒôğÃWí*(bjPµ.E©:4ÒHAUÏ¦}øá‡¶úê«ÛDM´:ŞW_}²~øá6şøãÛüÓŸÓO?İÆc:thˆºıöÛm‘E±qÆÇ¦Ÿ~ú RñÅ!ŸÍ6ÛÌ6ß|óğÖŸ}öÙCè,Ï?ÿ<ÉA~üñG[o½õÂõ ·+®¸ÂzôhÃÑG†"»îºk8'û3Ë,³Øu×]g»ì²KK4çöÙg¶õÖ[Ûd“M4ò´dğÀ­·ŞÈbfšiB=ß{ï=O1ƒt Ù·Şz+cBpÏ=÷ØŠ+®h={ö4Ú³í¶Û×!­#Âı ?Ã'üRòæ›ošRz?ıôÓ-Yûí7Ûk¯½¬wïŞ6óÌ3ÿUŒú%IbŸşyK>šÕlñyçgtèƒ:¨¥èŸşÙ–\rIãa{î¹çìa:ÁßÿmÛm·}ÿı÷vË-·´œCàæ›o¶ÿüç?¡£ğ&_sÍ5C'ÿè£ìª«®
+*õÚk¯MÖ }ôÑÚıÂ/Øi§B:?„QÅÑx®¿şzã-K}IKå©§²5ÖX#=Á_mµÕlÚi§m‰m´Ñ;
+[Fß¾}-%±wß}7h%“N:©yæ™}úé§F
+9ôĞC¼fœqFûçŸl÷İw7Èm•UV±e–YÆ^~ùå`÷yçwVœS‰@¼<òˆí³Ï>¡œUW]µäiÔ“ûƒéÅ_´ÇÜhÓrË-g_ıu8ç„N°“O>Ù8âˆ€äsÈ!‡„4Â! Ÿ¦E ËDqâ‰'†·`’$AS ÓpÀ¶ÒJ+µ€†ÏÃxÉ%—oSlt:2ä€]ƒ‡øê«¯n9ç›o¾	j>j?‘…BÁĞxèÇo¼ğÖÆ°ÈCıÌ3Ï%ZÊgœatdŞ~hO>ù¤ıòË/Fç¼ì²Ë‚Ía¡…²	'œ0/ ²p²ÿ|ğÁA³¡~X‘£ì}÷İ7ØeèØttÊ„)€ºP†2k­µ–m²É&X ©o¿ı–,#d6ÖXcÙ~ûígSM5•Ñi!6Ú?Bæ¢´³$IlÔQGM»6aÜ,Ê±-ıõ×_É£ñôêÕËÎ9çûé§Ÿ‚m†L öîÇ$“Lb‡v˜á“&i~ztµ‰eŒ™¼ÅÓfğğQ>y±ÅDÂ1BçA…M;ùV[me¨çiÇ¹é¦›‚ÖA~He©¥–"Ø"ŒÅ9xıõ×ñ‚ğVïÙ³góC§ÁçÍÈ™0FI|-d‰%– ä÷ß>oö¨ğg9æhÉ™½&‘MPÓ—]vÙ0J’¤Ec)§¶3,úõ×_s0 ¢UğÆG[¡Ì¶Kj`>ÿüóÃ0já…6îO©ó^yå[`lÌ1ÇlIFûË7Şx#h9Mña_K ñ¸×½\7mm—‰‚75ÂƒÃ›æ†nÃŒhàÊ¡C’ŸºK’Ä^{íµğ–'ª>Œ·&ÇhØPk±+0Ë% òĞqğÑVğlø¥$%¡â±:×Mó£İ~ÿı÷ñ*Tõ4s’$i0øhOM C:<$tï½÷†´r?tRœsÎ9gĞ*ğg›m6C3)wNr?ì&^x¡AèÌŞ¤y²ş—_~l6Ù8Âà¶`b">ìiX~s#Ğe¢(?:ìK/½’YoÁC›¾å²ş{îò Ó‘ LløH{ì±Ã›85j‡0<Áçí‡ß¤„€=$›7%âP÷Ñ0n¼ñFÃ~B\±ĞñÛëèÙsĞ&ZÑiÓ!CœlRaÈm‚ÎŠ½†‹ÍM£Tş¶âæ{î`ë(µŞƒû“Å -|Á‚àşp_Ò4|†yø’æG &DŠÏ¸™	 D-ç¡Bm†0Rá!døA„D§:ë¬³lyæ	–~â=a¨$œÊ AƒBíüL7İt!GÖšOÇÁà†ı°ÈŠ7?FÇaQ-C¢wŞ9L9¶D¶`<›{Mö¸8Œı"%#ˆCî‘Giüq‹V|N[Ç/°Ù0Ô*Î—j/›Ó4®Ã9h1I’Øqœ¦ãßyçx’n€@—‰â“O>±¶šÀÆo:9ë)ÀµãÓL	2xğÁ‡ñ7$yˆƒ%So;ˆK¥P($‚åÍÃå1‰¤ùÚò&-ã³LG2-
+yax,>gË-·GêˆVsé¥—ù™íàÎÆÁâóÊCdtúc~¦9Ó:3mÌy3Ì0ƒÆ¾ >×ÂÆ@=r`¼¥,:<ç”•k¥á]tÑEF{JÃıÁğ‰!ša÷ˆ¡äÍ9Ô-;y˜ÒFÓ!­j¢‚¢E ËDÁ4%ÁğÈPbÑEµ‡z(¬w å={ö4f ˜eàÍÈŒ«Q§{¹…<©`eÏ˜:ÃÇêO,Efã±Çva8%½RaÉ5õcštÊ)§§¡A3.¿ürC{@3‚¸X7ÙwÜqv×]w…¡P8¹‚Ÿ„qr­yç×N:é$ƒ„ Ÿk®¹Æè˜k±Õ°ƒÙV‡î¶ÛnÆĞ€¼½{÷¶JŞâ`Èı@X3rß}÷…:síRÕeöc1k@°o@6CD´Îaú–{Ç”.dMLHƒdğ%Í‹@—ˆ‚7:^,Eæ­_¬j3¥É[»ë
+èˆLQCË)‹± •â4Ş¦æx“a…g4›·&k4²çÑ©SŒÄCLÌ®0@Õ¦Œ‚k+éYa*›	õeOÇaÑQvv€NEùY•ÎES‰”‡m„ºšŒ™–…ƒÓÃx“sŞhqÑZ 'âĞD¨kJn”[,hGäÍ
+ÚD9gó£	r4íòW´<Ò;Òô$I‚Q•6€†Q†G‹Ãé9ò›.Eµ`À¸È°‚‡0û Wë*§k`7bZ²‚¨y ùk~]»ŠÎ(ˆ-„7ooÔ}4‡XkØzu±â)®á£ıôë×Ï*¥«3»X¼N(ˆb‘E	‹zXoÁø7rÌºeõ’$±c9&,½O‡6¬u)bvKpºA££ Šn€³š(ECß>U^ÔE5pVB ÉQ4ùVó„@5h:¢`k6Xİ@,¤b—*ƒM=õÔa¡ßrì¸ãÆšòÄ.¬†ÄhÈÊÍØëªú5'ME|ÄÄÒo6Yan­@
+,zbŸV’2÷ÿÄO„=XğD¾˜…U›¬ˆ¤m_ÌuUİšø‰¢¸³’BÈ.UfÃ–A³â“‘t:¾ac¦ùÒı0:p™\²²Œœİ§:ºd=—Êê¢M‡@Ó«;Y-Èë$¾Ë‘ùä½øÎ±|œ-õØP'McK<ÖtğY5ß:ğq«Ót––#é1>KÑ“$1öÌà˜Ïøo5øÆ…Øˆûí·ƒ‘ñe,Ë¥Ó}HgXÁ7,¥fY4×aù5ieí°ÃÚb0$uG iˆ‚ï0ø.‚ª²(ò½[Ğ±/%Ÿ——j°±=ñÂ…íèÖ^{ílqí†G}tã‹OêÂ÷|÷Á>}úô	[Ó‘†F™°}’—/Rùö„ßø^…0v•ìPƒcvójÛ
+m“4MC|ZÍ¾¼y³·æÿû_Øƒ&Z_HòÉ44eóña«BÙ“c(ß5ğY7ÛøutxÂ×”l8Ã6v|,Æ'ñt|>Ó^wİuÏÌù¢4½~{{Š¦ùĞ~(¶¦qò…@í0k¢`ˆÚ_ª<–tö”`ó¾`å;† énQ|fM\ö|>¹æ˜·8~¥!eó²—ÄüóÏohi<Ÿ³11Ç$Àƒc¤xOQâ8ŸOÂÑx8–z!Ğ4D-€)ÄrÀ±•êğVg¯NTÈ¯!±/0<(ÖFÒò²vŠrågãÑH²Ç|Ã‚m"—“ÎĞ'I’–Í“¤õ¢i~>«ç“÷ôX¾¨MCtNö˜È‚Æÿµ€²q„Ùë)S6áÿg`G`OÈ†ôT˜n%Ì×’ø¥$ÕHJ¥¥qN[›iú¸;K±ğµfZ>u*&4â%B –4Q0Ä eÁb†ÅöòĞÁÙ¼%İì–­éŠÇşÅ{r2‚öÁù©ï#™Æg}6€aGmìi<ŸÔ3Ë±Û
+3‹ ŒT ¨ì¢Lç¢}@,i9òÆ¨ÓÅ|óÍg¬3`!…5Ì‚ LG8Ğº0ü`–mîX|EşB¡ı=9éĞ¬üÄæÀ¹ì¶Å¶xœß–ì±ÇaÆƒİ¶˜	áól6çaÁNWìí@½™ikOQ6õXøm]OiB Ú4Q0Éÿ0ïJ   IDAT‚ÍiS’$1ZAlnËÖtì#ÉÌÛÙ¡q¤›äT²''·ØÇ2=ŸMvØŞëe×Dpœtr´–½÷Ş;ü§2
+;	ùJ0-
+q0EË&>C†±â=EÑBØ1›Î“z!Ğ4DAg£#³ã4*z
+ ‹­úõëg3¤!+øïYi>|H-ã%k0tÒyIC(‹E]i9tdÖ]P6ò°¿fvê“8„á³hSYZY‘†p>¤ÃŒe°+;{‚ıba“[òK„@=h¢ 4Ö@`4d#[›I ì-h"ÍÔ®Ú¶E¥W¦"
+fØÙ› Aµ@Ê»¶è§]üly×G×ï~4QpûX4Åwüï›AøŸ®Ìè¤ÿr Ú¤64MG¿j+EcÜ§k©*u'Dİén«­B “ˆ(:	œNİ	EwºÛj«è$"ŠNWÛÓTºˆE\÷CµQ" ¢ˆò¶¨RB .DqİÕFD‰@7$Š(ïƒ*%¢F@DõíQå„@ˆ(â¸ª…ˆEÔ·G•q Pe¢ˆ£Qª…ÕE@DQ]<UšhJDMy[Õ(!P]DÕÅS¥	¼¨ÉõE5U…
+æB@DÑ\÷S­5A ;<K˜0¨/5y¢UhMèQ(
+’B¡S,
+HÃ‚ÿe.”Ç¶&Ouí
+í¶%£Q¼õ³Î`0ÈÌì¹<.{¬pûØ:dr1# QÄ\?ÕMQDpT!;"ŠØïP÷©ŸZ1"Šˆoª&bA@DËP=„@Äˆ("¾9ªšˆE,w¢¶õPéB Kˆ(ºŸNİE÷¸Ïj¥è"Š.Á§“…@÷@@DÑõû¬„@Ó# ¢hú[¬
+®# ¢è:†*A4="Š¦¿Åj è:±E×[¨„€è2"Š.C¨„@ó# ¢hş{¬
+.# ¢è2„*@47´ND
+! ÚD@DÑ&<JB D  B MDmÂ£D!P[¥tE£Ü)ÕSäˆ€ˆ"Gğui!Ğ(ˆ(åN©B GD9‚¯K×•^=DÕÃR%	¦E@DÑ±[ÛÏ³/äRÎ‘¶G¹DÅFE@DÑ±;	ğO‰¯óÓ ÷‚#|½‡HƒL<('šEÇîåı—Õ\îué;L¯êaÒÈãÁævj]÷B@DÑ±û}gÙet—q]&s™Ü…0q¤‘Ç£ä„@ó  ¢èø½<ÄOùÅ9ŒFÀ…8Ò<('šEÇï'šCñ™Ä‘V¯c!Ğğˆ(:wÑĞ Ò³	—wÉ×ÉB 6D»#hhéÙ„‰Kå¦B@DÑùÛ‰&î|I:SD€ˆ¢ó7â3?!ìA9!Ğœ@oZ·‘*·õN/~f]ÁÀô7=
+…BI§1ØÙ±C„a'Ÿ£¸»‡j—"€Faıû÷—ƒº?éC(?~QÄ_MÕP<¨*QäÙ][Ú! ¢¨¶*Y4"Š¦¹•jˆ¨"ŠÚa«’…@ı¨ÑE5VÅ
+fB@DÑLwSm5B@DQ#`U¬h&DÍt7Õ–Ú"ĞKQtã›¯¦JQTŠ”ò	nŒ€ˆ¢ß|5]TŠ€ˆ¢R¤”¯¶¨ô¨QD}{T9!"Š8îƒj!¢F@DõíQå„@ˆ(â¸µ­…J]D@DÑE uºèˆ(ºÃ]V…@Qt@.º"Š®Şe/º"Šnp“ÕD!ĞUD]EPçn€€ˆ¢Üd5Qt¸‰¢«­ÓùB@TEU`T!B ¹Q4÷ıUë„@UQTF"šÛ%¢øı
+!Ğ"Š6ÀQ’ÿ" ¢øı
+!Ğ"Š6ÀQ’¨-SzMˆbğàÁ–$I+m´Ñlî¹ç¶#8Â~ÿı÷„¦›n:ëß¿ËqŒ[o½Õ&˜`[ıõ+ªŞ7ß|c°Å_ÜÆ|›rÊ)m…V°ƒ:È~üñGÓŸh4jB)Gy¤=øàƒA®¹æ[vÙeíä“O¶M7İ4Íµÿ×_…Î½É&›„_ie7ÜpC;í´Ól°sÎ9'´™¶ŸuÖY¶Í6ÛTZŒò	h¨)QÌ6ÛlÖ§OŸ k­µ–ıïÿ³í¶ÛÎ®»î:{óÍ7£¡\EşùP×'xÂhK¹|Ùø?üĞî»ï>;ãŒ3A …¬·ŞzvàÚÁl¯¼òŠıúë¯ÙSÑ#PS¢(Õúå—_>D¿÷Ş{ÁçgÔQGµóÏ?ß–\rI›xâ‰m‹-¶0ÔwÒŸ~úÉöÜsÏ Ê3Î8¶è¢‹Ú¹çKR‹¼ñÆAS™jª©‚ªOç|ôÑG[Ò	üñ6ÇseÌ5×\ášÄ—“©§Úzê)›}öÙËe!şóÏ?qc9fğ³?{ï½·½üòË6úè£·DßqÇAówÜqm©¥–²o¼±%MfóÍ7·/¼Ğz÷îm7ß|sHc(´Î:ëØSLaÓL3‘'‹'ZÛ¤“Nj·Ür‹Í;ï¼¡½h7×^{m8?ıyà–à1Ã3X¿~ı-*M/wı4=n_µ«&u'
+NĞÛ||äöÛorß}÷µ+®¸ÂÈsôÑG“ä€°Ûn»Í6Şxcãa_sÍ5mçw¶{î¹'¤ÿöÛo<òÈ!ßİwß†
+ë®»®ıòË/!Ï)§œ†”Å[Ÿ}ö±İwß=”2”ø¡³õìÙ³DJù(ì0Ø]vİuWc¨ñúë¯Û?ÿüSò„Ç{ÌÖXc@€´{ÕUW5.%b¹úê«ÃP›Ç»ï¾‘ºyæ™NŸ~ú©õíÛ·å£Œ2Š}ÿı÷ÆyÈ|`K/½´m°ÁööÛo‡|Ï<óŒ­´ÒJ¶ÄKØûï¿oçwAZrÈà?¥®ïÑrİºÅW_}eÇ{l³3^Ÿi¦™Zàh¢‰ìì³Ï6 £æñÇoI?üğÃíŞ{ï5:ßÊ+¯ÔxŞwİuWÈÃ0æ£>²wÜÑæ™g 5Pä?ş0ˆ„µË.»Øf›mf={öZaê
+©Òôúë¯·ùçŸ?hA³Î:«ÑÖí·ßŞ†Òê*h8´`õÕW·œ÷Ûo?ûöÛo[òA4W^y¥­¶ÚjNÓN;­=ùä“vê©§Ã9Şúh?üp«óŞl»í¶áÚTiÿ„NhØŠ(œc´*Ú¡¶;ì° ©}ñÅd	R|ı©Ÿn‡@M‰bíµ×n™ù`H±ÿşû‡™.¸ ĞÅã:ò×_İ’çã?¶C9ÄfœqFi¤‘B™Ø¾üòËgæ™gi[o½µA*<òˆıı÷ßÖÇ~Tzˆ„·.oïpÂ°T}Ş¬É°¨ªxv®yâ‰'ÚôÓOlhQ;ì°CË5Ğ(FµDxà¨£2ÚáÁà :z8ğŸ=zM
+²¥mI’­Ä“,öFvà#×çw840‚˜“$	Çü€3xğ`ƒ_?Dê§Û!PS¢ÈÎzğÆûä“O‚fÀ[1‹4S§Ùã$şğ2tàÍI'@=gzU‡:=™òÑP÷±uL>ùä-6:,y—[n¹@2I’ŸüÄ£àW[ <Ty4´	´
+fA~úé åĞ&ò´uİât†h[mµU°w€ÚV©2ŠÏÅí‹k
+…€C’ü‹6Êá>á#Åeg¦ßî†@M‰M0¦óv`ÆèŒËY—°à‚ÚcŒŠ ã…À°ÆìÌ*0è¡‡Œ!
+C‘gŸ}6HÉÆ8<®Íúh;¤WC0¼bX-.‹·ÿÿıßÿ…hfS Gâ†â*ıÁ.Ãp­C&çÑfübÉaHãí„kãc£Éâ†±÷_"RjJéEºâ÷İwátÆ×!à?L?f‰â­·Ş²K.¹ÄSÌ0h¢Q\|ñÅámùÒK/}Ş¦ÌD@Z©0›™=öØáÜjü0ôáúi½³e¦3©F…á³xfæĞC6˜ìyÙ0åbSÈÆ¥mÏÆfx@`.Ã –0äJ±À_l±ÅÂL
+ÄÈ#)=Ò@¬ş,³Ì¦O:é$ûì³ÏÂ,+9™ÑHß¤ÄcõÇÈ„Y¦!é´j6k˜aaFà¦›n²UVYÅ°!”k;å8Ğºğ6ÆnBáš¥Îc¨¦€ösé¥—†sÉÏt.6È‰ÙÎ¥Ğ|##ÄFz)™sÎ9Ãğ2Ñ\0Xb”$/³9øÃ1Hë²Ë.3l9ĞŸşi,#´Ë/¿ÜN?ıtC«°Š1<Ê®œ%¯DDO¬‹àÆÒ‘~ÑE…ÆÒÄA¬5 ŒH§AóHß {íµW˜ÄJ‹¿0nbG)÷°¶c™e–1„„jNa
+¶Ôy“M6Y ¦9YtµöÚk‡ó!œ—j0ØLX§İ…NJÎ>ûì6Wo2cXÅB.Vy¢@¢¬=af$ÕÀèIü	'œ`L×2c|¨7aÈEË@«bFh’I&	FW†&ä‘š#FÈôBå|ŞÚ<üÙôc9Æ^}õÕ–(´‡ç{.h³tV†©…~Ë-·4fG¸.ÆKÖ[,´ĞB-e`ìÍÔ%oØAƒot:i¥›å•4˜Rç¹A@Lñò¶æ|2¡a«õ`Å[ŸécfA°=PB[YSB8lÄÓ†tpÚÀPM€µäåzö~øÁ …4t1B¸àÈ²s¦`IC¸Nñõ‰—t?jBİFµX47"Šæ¾¿j¨
+İŒ(ª‚Yô…°¼aHôUEÃÜ*UTä‡€ˆ"?ìue!Ğ0ˆ(æV©¢B ?ªHù5BWB ¶ˆ(j‹¯JM€ˆ¢)n£!j‹€ˆ¢¶øªt!POjv-EÍ UÁB yQ4Ï½TK„@ÍQÔZ,šEóÜKµ¤¶tëÒEİúö«ñB 2D•á¤\B [# ¢èÖ·_•! ¢¨'åª-*=rD‘ß UOÄ€€ˆ"†» :ÈQD~ƒT=!"ŠîBmë Ò…@—L&Y   IDATQtB šEóßcµPtE—!TB ùQtíël!Ğ-Qt‹Û¬F
+®! ¢è~:[tDİâ6«‘B kÄL]k™ÎB jˆ(ª¥
+Í‹€ˆ¢yï­Z&ª†@ Š˜DÔû¨ÚS¬‚j†@ZpB¡0 P
+Â``¡P@²ü/{¬p¡<¶éƒ(?nĞ(
+^E‰Yg0dfHöÜ—=V¸}l2¹˜€(b®Ÿê&„@ˆ("¸	ªB÷D ‘Z-¢h¤»¥º
+œQä¼.+	E#İ-ÕUä„€ˆ"'àuÙÚ" Ò«‹€ˆ¢ºxª4!Ğ”ˆ(šò¶ªQB ºˆ(ª‹§JM‰€ˆ¢)okm¥Ò»"ŠîwÏÕb!ĞaD†L'î‡€ˆ¢ûİsµXtE‡!«í	*]Äˆ€ˆ"Æ»¢:	ÈQDvCT!#"ŠïŠê$"C [EdØ«:B aQ4Ì­RE…@~ˆ(òÃ^Wƒ€ˆ¢an•**òC jD‘_te! j€ˆ¢Ö«|!Ğˆ(šà&ª	B Öˆ(j°ÊõB †×QÔ\-šE³ÜIµCÔEÇÀíçÙr)çHÛ£\¢â…@£" ¢èØƒø§Ä×ùi‚{Á¾ŞC¤A&”k*ºycD{ vğìÿ¸¬ær¯KßaBxU“FÊ	æA@DÑ±{ygÙet—q]&s™Ü…0q¤‘Ç£ä„@ó  ¢èø½<ÄOùÅ9ŒFÀ…8Ò<('šEÇï'šCñ™Ä‘V¯ãöPzôˆ(:w‹ĞĞ Ò³	—ËM…€ˆ¢s·Í"=›0qé±|!ĞTˆ(:;Ñ Ğ$Â/Ig
+ÈQtş¡A|æ§#„=¡S•„@€(
+^Ä¬3ÜifHgÎÕ9Ã1wåbF G¡Pè/é4;;vˆ0ìässçPİ†#€Faıû÷—ƒº?ÃC…bG Eì•Œ¶~ª˜è&ˆ(ºÉV3…@WQt=+º	"Šnr£ÕL!Ğâ%Š®´Jç
+!PUDU…S…	æD@DÑœ÷U­UE@DQU8U˜h&†·ED1…„€(ƒ€ˆ¢0ŠB`8"ŠáX($„@De€Q´¨-Uºˆ¢±î—j+rA@D‘ìº¨h,Du¿T[!"Š\`×Ek‹€J¯6"Šj#ªò„@" ¢hÂ›ª&	j# ¢¨6¢*O4!"Š&¼©µm’Jïˆ(ºã]W›…@Qt0eİŠ‰âÜsÏµ$IlóÍ7ï4N/¿ür(ã‘G©¨ŒM6ÙÄV]uÕŠòv5S{í[ıõCİ“$iñ§˜b
+[sÍ5íÅ_luù$Iì¸ãkWêà«¯¾²i¦™Æ.¹ä’–äşùÇ.¾øbÛ`ƒlÊ)§²Új«ÙE]d¤¥O9å”–z$Éğ:M?ıôÖ·o_ûä“OÒ¬Á_vÙem•UV	áâŸ×_=”uıõ×‡¤Áƒ‡ã$ù·Ü1ÇÓ–Xb	ÛsÏ=´I?İ
+Š‰âŠ+®°ùæ›Ïnºé&ûşûï+éÕW_µ™fš©%ï$“Lb‡~xè-‘‘*iß¬³Îj>ø`xÀößûùçŸmá…¶§zªÃ-Ùj«­lé¥—¶-¶Ø"œûÍ7ßØb‹-f;ï¼³Í6ÛlvÖYgÙGa“M6™m¿ıö¶Ë.»„|ÙŸÛn»-Ô‡zİwß}¶ã;ÚK/½ÊùòË/³Y;>òÈ#CÙ·Ür‹Q×O?ıÔæwŞP—¦•Ôş­·Ş²ÚI'dşù§¥oöÎ}öÙg[e(=ôĞèˆ¢Òö=öØÖ§OŸ Ë,³Œí±Çvíµ×†6vÚiÁ¯ôç®»î²ûï¿ß=öØ–S>úèğÆëB¡`k¬±Fè çŸ¾sÎ9væ™gÄĞr‚_|ñPŸ>^¯å–[Îöİwßçı÷ß7ÈÏ³tÚAV”»üòËÛ6ÛlcW]uUxĞ¾ ±N¬ŠˆâÒK/5Ş¦K.¹¤¡‚—z QÃy÷Ûo?ëÙ³§|ğÁáMI'L’ÄP•K=î¸ã[`lÜqÇµ¥–ZÊn¼ñÆ² şúë¯¶Ã;ØtÓMgãŒ3QŸ'Ÿ|²Uş{î¹ÇV\qÅP‡ÙgŸİ¶İv[ûì³ÏZå)>¨¤}Åç¤Çã?¾ÑY‡’FUä34Ùl³ÍlòÉ'ù¿ùæƒlhß‚.â²?[n¹eèø´9_*Ì½@Ş}÷İRÉ]Šƒû8)vØa]*G'7íãb:Rj›ÀGÅıøã[µtôÑG7Ş|¨â7Üpƒ0À:è ›qÆÃØz÷İwo•ŸƒÇ{,¼5éhöˆõÖ[¯,Ypí;ï¼3t˜wŞy'¨×+¬°‚¥ôùçŸãpŞöäD¾í¶ÛË•”JÛWòdüñÇíÑGµ^½zùQenèĞ¡†Ö@İÓ3^{í5ûå—_‚Í#+ö7Şxco¼ñŠ£G8Æ>`ÿ!±
+n¸¡1¬AªPœŠh Ú%Š{ï½×>øàƒ` £=¨¡tŠ‹.ºˆÃV2ê¨£†·"†³‘G¹UZ©ƒã?>+O>ùd[}õÕí€04’o¿ıv„ìÀu×]gYdcƒª>ÕTSm… ±Æ+”A<ª8Ã¤}öÙÇÌÈ1¢t¤}Ù³!ƒ+šcølz[aŒ¹ÿıw0¦ùÒ·ÿ´ÓN›FuØÿë¯¿ìñÇZßÄOÜrÏ:\P;'`0%ËÛo¿'é´Kh¨ò¨²à‘$IRÏqVZh¡ìa»a:ö¢‹.Ú*ßQGe[o½u«8Èù@(#I’„áJjéã*1¢BG«˜`‚	ƒ!ùK	í¨´}O?ıtËl@=`àÀvÆgZL©òKÅ}ôÑGÆù)Óô?şø#!¨ğ‡¡O’$¡^àƒ1”Y
+Œ­M4Q…¥t,Ûh£Nøı÷ßƒ_üƒ–õİwßY*Åé:n<Ú$ŠŸ~ú)Ìr`xK’Æ$IÂÌÅo¼Tîl“+Q‹Óü¿ıö›}şùçÁ–ÆµåcqÇÊCš$ÃëröÙg·Lb“€4æœsÎ Uàc+¶c¤×éhû°Ó0»
+S…¨ß;í´SZdE>C4¢$IZò§¶Š÷İÙYA ãfZŸÔ0Šı`9æhuöH#dåHˆ!™!üö“<hmøÅÂt.vªT:Ú¦âòtœ?mVnªˆu>}Sşùç·+¯¼’äN	&¦’P¥ÉŸ^?ë_xá…-E@h_|ñ…İ|óÍ†FñŸÿüÇĞ4Z2t´}ÙY>}úØÜsÏm´cXq{*k(²' 	ĞQ±ïdãÓ0üÀ4l.i>öê‚0ãfÃ4*¤Jz*h/Ø-Òã¬és\©M{¶§tÂ¹Y9õÔSáU*]NeËU8?Ú$
+1E‡*Ïƒ˜]~ùåö¯ÊÜ¹ĞÑ0fÏfú”‘#°~cæ™g¶l=zõêeóÌ3Yìá‡6lĞ©YÅZ ¯h$Äg¥ÖíË^+fH@G¦=i<äÁz
+¦iGŸú 6†`i\)Ÿa¨È›MÇ^ÃPŒáS6=ñÄm®¹æjÁ1›^æå€A¹--Š² °TŠËĞqã!P–(Ş{ï={è¡‡lİu×-Ù*,ğh7İtSÉt"g˜aûğÃÃ¼>Ó¤Äe¥ÿş¡c³Hˆá„œó²ùCVt|Œ‡<ì_ıµ1ìÀÆ1hĞ ²„·Ú³/¼±r`ó€dz÷îò¤?Õh_ZVG}hqÎsÏ=‡×"Ô•¡šée4¢“N:É0ŞÒ™wÛm·vWÆÎ2Ë,ÆeÑÆ´ğ6ÚÈš1, ÷Ûo¿İÀ›Î<xğà`„N’áC!ÎcÁ6˜T0
+3¥»ÖZk…kGÒ=(Kt6Ö*ğ`•‚bê©§Ó“¨¡VæéNÖF •0cQœÁŠFŒ_<€!èü,î)ÎË1k,xà™Á^pë­·Ú	'œ`i‰g#Š¡
+oh‚7 çg¥íË–×‘0*>Z32Ùó°[@‚Lë‚ÓºÌM:é¤a±ñÙüåÂ
+k2Ò<L_C¨L1ÿïÿ³L`ÅĞ‰a\©õLo3”A¸?{®ñrÀæ‘–-¿ù(K,F5cŒ1Ê¢À°ÎK¦÷@°ExÀï¾ûnc*‘á6Â|7fbØpÙe— juvÆbAVš—™~llòĞ0Òt^:k9¸coTq¾™Hó¤~GÛÇ
+L:oz~[>×f¨ĞV–CVÅC"¦˜Ñ°BÑFfHĞ,X»-­ëôìÙ3Â<öŸ…ˆa?N8a Vî+ç"`V1,Kğ¸'¤e…zp¯Yp2é'6jZŸ²DQÓ«ªp[yå•
+ÂB vD9Ş!†Z,Úb-GÕĞ¥…@»ˆ(Ú…¨v˜ı`ˆ€İ vWQÉB ëˆ(º¡Jh~º}Eİş B }Díc¤B Û# ¢èö€ í#ĞTDÁ‚¤$IÊ®diñÿûßöQi'[öë×¯\m'ó«'ÛÎeae+ëQ²ëIÚ;§ÁÒUİ@ ©ˆ¼Y°ÄGIìÉq¬²÷Ş{‡±Ú«+`Ù9Œ®øf¥½üJµ@ éˆ‚Í|Yr¼×^{Õ¯ª•Éw,o¯¤@¾·á;B¡PIvåUG ©ˆ"IcŸ> bã–âo)ŠÑãv¦â{–=ó©7_Äfó±EKœY*½Î:ë„İ¶YJÍÃ‡ol¨Ãº†äcIz6Oq˜|éĞƒ¥ÒhA|,Æ§ôÔƒ¯hÙ±*=%á\pAŠ¤qò…@½h*¢ 4:ß*ğÁ[ëAÄ—’µ×^ÛØè†= èììXÅÇO|ŸB~vpâƒ6¾wáKÊÿû¿ÿ›³HŠt„ïJø Šëğ5(E˜]³ØC‚<íÉé§ŸnßoğÍÛõCX|ğ–Ë×³ìW‘Ö-oÇW²¨
+ME¼™áÿ‡ğ)z¶³Ÿ
+Ÿµ³!”ÿUÆÀGmì‘‘nEÏGP|1ÉÙlÈ'àìï™ı‹Oµùx‹½-ø*”¯Z±)¼ğÂÆÿÃH¯×–Ï/H7İtSC+¬XÚÍ÷ éy|ı‰¦ÁG\iœ|!P/šŠ(² ñ™9{:sÌ1–lËU   IDATíØi6qa‘ı’•4Ùø…0owò@$#»EFØÌ–ÌP‚c„Ø`ç™gá°]aÃb4¾„E“àßğ/	˜¥ÉY¡ùdãõ@ i‰ğØ—‚ÎÅ„ã$¾1{]²ÿC’#›Õ¦ÄÂÿÚ ñYásíô˜¼h&I’„n“ä_Ûii¾¶|ş÷ŸÌ³w%Ú¤³ÒJ+YñnäÔ­8®­r•&ª…@SS¥ğægŒŸ‡ÆÁ!=N}:"äÂ1ûm–2J2¤13²å°	{dË{îòTò10ÔaÃaş+Dƒ%{îĞ¡C²ÈÆ),ê@S 2jÏ)Œ’I’ml¢ƒ±±xÌÏöLE’‰!{[ò?E8F0j24 ŒPdÂ¿€0Ra‘Ãò´'lÜC¹äCƒag+6è<x0Q-‚1µD( ê„@Ó8²ï$3l3—;1B »îº«axÄ.Á~›,Ô‚T8’a“Ş­¶ÚÊØ“ÎÌ¦²Yy™ù ö¨doPl#ÌRdHA$_|1Å Ø%Ø¬˜Õ—hlİG^fNÒÌÌæPv?Oãäz!Ğ-ˆ)G¦;³ÀÒ1Ù‚ííùçEhÌT°n‚|¬i`:4G!ä§<´ò0[	a·`ó_†C†	ÿ* W¯^d	‚¦’V‘Ã~ ¶¿gïO4ş/Gß¾}Ã¶uÃ²„MˆøáƒPÒ8ùB ^ÄJjº¡ÔÉLk¢M°)Me”Q;Ó“ì#9hĞ cİDšf€}ƒµ	†G¦.ù®„t„l™Ea¦â!-®Í¾¡éqJ43ÜÀ>A®ƒæ€VÂ”(éë,¸6Kº9–z"ĞTDQOà:{-fBØ¨Òav£’rXÆ°'Kr•œ§<B Zˆ(ª…d…å``øÀÙbeh{§±û5»r3s“ÎÆ´wÒ…@µQTÑvÊãß0ÄxóÍ7+ú¿«üO¦qWYe•vJV²¨.ÙÒDY4B $"Š’°(R,"Š,
+!PEIX)j‹@£•.¢h´;¦ú
+Qä º.)E£İ1ÕWä€€ˆ"ĞuÉÚ" Ò«€ˆ¢ú˜ªD!Ğtˆ(šî–ªAB úˆ(ª©JM‡€ˆ¢énim¤Ò»'"ŠîyßÕj!Ğ!D‚K™…@÷D@DÑ=ï»Z-:„€ˆ¢CpÕ6³J±" ¢ˆõÎ¨^B "DİUEÄŠ€ˆ"Ö;£z	ˆD1`À kvQûâ»ÇõU¥z
+……‚¤Pè…’Å°àÙc…å±mçùTr$ Q¼.³Î`0ÈÌì¹<.{¬pûØ:dr1# QÄ\?ÕM¨
+QDĞUA" ¢¨!¸*Z4"Šf¹“j‡¨!"Š‚«¢…@İ¨ñ…D5XÅf@@DÑwQm5F@DQc€U¼hDÍpÕ†Ú" ÒMD¡‡@vQ´‘2! ¢Ğ3 „@»ˆ(Ú…HjŠ€
+oDq›TI!/"Š|ñ×Õ…@C  ¢hˆÛ¤J
+|Qä‹m¯®Ò…@•QT	H#šE3ß]µMT	E•€T1B ™Qtöîê<!ĞQt£›­¦
+Î" ¢è,r:Ot#Dİèf«©B ³ÄImÎB &ˆ(j«
+Í…€ˆ¢¹î§Z#j‚€ˆ¢c°öóì¹”s¤íQ.QñB qh]SEk<Ú;‚y¦ë\ ÷‚#|½‡HƒL<('šEÇîåı—Õ\îué;L¯êaÒÈãA9!Ğ<ˆ(:v/ïñì/»Œî2®Ëd.“»&4òx”œhD¿—‡ø)¿¸à ‡Ñ¸Gšå„@[4^šˆ¢ã÷Í¡øLâH+×±hxD»…hhéÙ„‰Kå¦B@DÑ¹Û‰æ€‘M˜¸ôX¾h*D¿hháÎ—¤3«ˆ€Šª"ŠÎ£Šñ™Ÿö œhN Š‚7MbÖî43¤3çêœá˜;Œr1#Ğ£P(ô—tƒ;Dvò9Š¹s¨nÃ@£°şıûK„AÏ@uŸ“á¡B±#ˆ"öJª~B@ä‹€ˆ"_üuu!Ğˆ(â6©’B _DùâŸ¹º‚B ^DñŞÕLDƒ€ˆ"š[¡ŠxQÄ{oT3!İ„(¢Á[‰€ˆ¢!o›*-ê‹€ˆ¢¾xëjB !Q4ämS¥…@}¨QÔ·ÂºšõG@DQÌuE!Ğpˆ(î–©ÂB şˆ(ê¹®(ª@ÍËQÔb]@4>"ŠÆ¿‡j¨9"ŠšC¬ÆG@DÑø÷P-¨-*İQ8rB@´€ˆ¢m|”*„€# ¢pä„€h\ˆbıõ×·$IZÉSLak®¹¦½øâ‹-5~ûí·Cûï¿¿%.¦À'Ÿ|b;î¸£Í<óÌ6şøãÛ²Ë.kW]uU»U|ıõ×mçw¶yæ™ÇÆw\›i¦™l­µÖ²ÓO?½İsÛË°ñÆÛ*«¬Ò^¶XÒUA ¢ ›YgÕ|ğÁ <ğ€í¿ÿşöóÏ?ÛÂ/lO=õY¢–?ÿüÓÖ]w]»ã;l«­¶²sÎ9'tz:êÀËÖı³Ï>„BÛW_}u»âŠ+ì°Ã³é§ŸŞvİuW;í´ÓÊ[IuÚd“M*ÉÚ’gª©¦²!C†´+ ŠÈ(Æ{lëÓ§Oe–YÆöØc»öÚkCıºÚYB!5şyâ‰'ìÉ'Ÿû€0´¤k®¹Æ&™d»óNşË`é
+Üwß}öé§Ÿ‚<âˆ#²Øl³ÍìÄO´ÿüç?¡ÌÒgVK=6ß|óÊ2{®>øÀ>şøcÉ	òäF¥ª„ú¾øâ‹ğvûûï¿íĞCµYf™Åf˜a†ğ­şùçŸ–"n½õV[guŒáË4ÓLct”÷Ş{¯%¼§zjĞVPõ[l±PŞ_ıÕ’çÃ?v¢‰&²É'Ÿ<”÷ÕW_µ¤(ƒ!ÄJ+­Ô’4ê¨£†ú}ùå—-qÅ/¾øÂzôèac9fq’]wİuvé¥—¶Äÿøã¡-¼ñiÛ;ì`œO†W^y%ËĞ^6Úh#[tÑE‰64štèñüóÏ‡<7ÜpCĞbzöì4°¤íœ;í´Ó†óz÷îÈ.èG!QĞ1}ôQëÕ«W«jwÜq–vvÔôÃ?Ün¿ıöçİwßµM7İÔ&tR;óÌ3íè£oì¾}û†t~ûuÔQ¶ûî»ù±\~ùåvÂ	'†<K.¹¤ıöÛoöÜsÏC!Â+®¸¢AR!SÑÛÄh£Ö’9=ıôÓ†í¡%²(šÄĞÖÛœ!Ã0Ú{òÉ'Û[o½e«­¶ZÀ"½.~Á4ˆ°èR6Ê(£„¨c=Öh?dØ¿;æ˜cìâ‹/¶>®Ñİu×]!uO5º¡!A 
+¢€PÉé¿şúkógêh+¬°‚¡¦ão±ÅÁxøØc…,¼ĞQ0RF¿~ıìá‡¶o¿ı6äyä‘Gl¾ùæ„‚Æ€ªÏõV^yå~î¹ç†7õ%—\bh$ØO ^xÁn¹å–§½Ã&ç£Ñ”Ë?ûì³·±& -ĞÑ!ƒ~ø¡å´Áƒšzë­·oûã?Şæ˜cûüóÏ[ò¡Ùì½÷Ş¶À´ÄV]uÕ M3Î8~Ã¤â|:åÈ(xó&ITcŞÎ ªğgœaØ,²¦se¢|óÍ7!Šsï¹ç Z3¬H’ÄÖXc–v¨å—_Şî¾ûnƒDĞ$0(N7İt6×\s…|?ş¸Ñár„ÿ€Ğyæ?jÛıôÓO¡#§¶ê×Özè!cVg¿ıö3:0DHıÓ¡šmÃ¸›–Ù]xá…6Ùd“¥Q¶ĞBµ„Ëæ{îVI3Î8£½óÎ;­ât ÚB 7¢à­å?Ş ŒíwÚi§ê›ªÙiB’$i07úõë´—_~ÙĞNî½÷Ş–tÛn»­İvÛmöË/¿Ú„À[5Õ8èàLÁ&Iˆ+Işõ_{íµ0Œ¡Œr‚:Ï°Ûê©§.—u„xf:0Ôyã7ûL:ûC0Œ&I2ÂyÙˆ={fK†Ço¼VñX·ŠÔhÜˆ";ëÁX™·^1!´Qï–$´	TkÔsÔ~°äãgb¸ñÆƒÚÎT&$°ıöÛ‡,O<q¯§¤•õ÷ÜsÏ§è'¢I ½@<Ô£’N‹–óÑG…ó³?¹Aı'˜`‚0ÊæélxèĞ¡­Nå˜!X«H6È(Ú¨S‡’¾ûî;£SeOÂÖ=¾ì²ËìÕW_Q¼¥·Ûn;c-†HÆıÌp,½ôÒ0 .)Ãò”´f:ï1Æ¥²Œ‡…ë£ù'2ÄFydcØÃp»Gj‹!ï›o¾ì5i[ˆ«DÆdó½ôÒKaö#§°h†'Š9çœÓj`ß@}g˜‘ÚĞxìl°AXÅÛ”u»ÕŸYÒº°Ø‹OXÿ™]8øàƒƒİ£Ü¬Tì	e°·pıT˜© ÜRÂìù–[n¹0sCaÈqàƒ+¤ƒ„mããyçgvÛm7CÛh‹¼J]“a6´ÚqwÃ7Y±W`Æƒv–b(`Ì^0ƒ°Í6ÛØ¼óÎk'tR°î3•ÈÛÎA‡à-)V¦OÓéQ†L‹N8á„a9tˆ¿İo¾ùf+ªM„(³PãkV +ÒJ	ù°e 5@›ˆ;ûì³rbX”ÇªOfR˜•a
+xÊ)§4†8#4Rš¥"ŸéeÈˆ¥âÌ®`@¥ıœŒQ—!˜0ÕJœD#Qğöjã­ÛRGW¡¢óöm‰ô êøYgå!ßX\tÑE†q7å.»ì4A¿ÿş»¡I0ÜÀ>AY¬àÍI§}ôÑCü`ğ£¡–³Ö-¤­ÖdP^)É~¯BÙÅÂt(³äC“¡4Ö80”Ió³bŸ}ö	«5™©¹à‚Â°„ôrØ\yå•#¬…™f˜ÆlÚE–l )½éš
+Ê—,¹E¶
+!?"Šøï‘j(rG@D‘û-¨]˜ÍaX³ÄK<b   IDATÔî"*¹)(n”ˆ¢!0"Š Q„Åˆ(ŠÑ±#  ¢EÚ"Ğˆ¥7$Qôë×/|6^OÀYô”$IØH¦³×å£µ$IŒõ•”Á×®,Èª$ogód7ºél:¯ùhH¢èÌmaV[+&Û+“½-ùÌû¦›n²ï¿ÿ¾½ì!o2Xü‡…_,êJ?^ó¨ÜŸ¼CH¹WDˆnC,ÑîìàÛKÃÙT÷úë¯¯¨¨gŸ}¶U>ˆ‚eÒ1KßÛÚh§UtĞm¨Q°‡%’E–eÑI’[Ş¿Şzë'ı÷¿ÿ5öÃdŸ¶¼gg)Òò’Í`ø¢“7;º–
+Ÿ{ó‰6û9PûG2THÓÙ‡ãóÏ??ì7‘~5Ê>äå–D÷ó!{I¦ç¥>±ûNĞ±¨Cš–úìiÉ®X|GÁ’i–ˆóA$“$‰rÊ)VjèÁ÷ìNÅ¦5K-µ”±Ô<-³Øg÷/¾zåûêL}ÒoNÒ¼|ÂÇnÔ/PÑ¢Xş¦ûÅC_\^ŞÇº~m¨QTR]¾eàAç{:-Á7ìFÍB!ÊàSn¾í`‡*Şälq—î—I:rÀ„ixèù„ÿÂ¾˜<ô¤óu)ŠÆ(—=-Ù¹Š¿XŒôşûï_hÒi!ÎI…üEúÖÅç»‰â¯Jùn"¢-lfËÇjtñ1eğmHZfêÓ.ö³€à ìb9²àÚ|ùJ^¾Ù`W.HØ(“ÍtÙX—Ì %È‰||ÖNz{ÒÕóÛ+_é‹@®Dl_ıµ
+…°ƒ6oJ´n~lâÂ^|‚ÍZ|İÉŞ˜tFÎM…q?dÀgâ|IÊW™¼¥ÛúÈ‰MxùgÙÏm…/(Ñ<Ø­*-›rù´;ıÚ’O¿ù¢”ÑÒ<©Ï]ü«´"ö•HãËùì	9°q.›íBxh$éÎ[ÙóèÄlÆËğg‘E	ÿ€6°ç&„@^ˆg¬±Æ2Ê é W>,#½=éêùí•¯ôÆE w¢@¥Ïîl•îµ Y @Ë×–ø-€p*¼İ9äğöF#I’Äø¿|Qšæ)ö!"4$¾ÕdzŸM8mU¡ÇI’„OØ‰ç8+Yö¸½0“¡O6ûU°[W60yi;„Â1’$‰1\Im!iı!*­dCò·']=¿½ò•Ş¸äN|Ş…±7Çl›¾Y¿—
+öŠ4ÌçÑìÅ¦,¨äØ4PõyèÓ<Å>Ÿš“M&I’`·H’ÄÒı.ùWœƒíƒY4“$†MrŠw*ne”“´ØÊåÉÆ£]aH…T“dx]øD<­/6	HƒÍ|Ğ*ğg›m¶ğ™z¶¬ráöÎ/wâ›ºoëbH‡Ú**%È !±x:2ÍCoMöÀ&€æÁîPÄ§ãvÂÅBg£lìÙı1Ó0ÃÎ¹êª«ğÂîRiZêÏ?ÿüÆŞ!C'~¨XÜşrE±¯'ùÓëg}ö¶HÏƒĞ&>±ñ6ŸRØ§çdı®Ÿ-KáæA fDfÀÛ=ÿİ*{L&ûUFØÌŸª±Yf£|„·*ÃÂ›±àc¿ÀG06¶Eäa'¬?şø£Õ™b°“yØ{c#ª|Ÿ>}ZåeCfq(ƒ¼6.ÖJ˜>ÅÆR\ÂdhÖ'S—^½zÆYòcèÅ¦B˜Í‹Zyä‘á_¢‘ß–tõü¶ÊVZc#P3¢àg:4³xë¡ÂÃ…Ñš¼Ø$£CÌRĞi±àcàdX¡ dË`Z•Œ|L2ëÁNQ,$Â™æeú“]µxc»`ø@Gç¿ˆñV§Ã²ÿ%ÛÂ±3{g²eå¤ed}fX8¡I6>æšìÛÉ•L“fÓSO:6Ûİ†T”œGzV +pbqÄ‰˜a6Aƒ…¬`ˆöÀìX=xB2½{÷yØºãp8(ú©äü¢StØM¨Q°,ÆÿÙ¤CÑ9Á5»Vc&”ù~ŞŒì<¥>I²Û¿Ñ˜&MßôLs’NÁùL^tÑEá?ƒ3v'|“$1fØî)I¦Hº0g=D1³À°€Î†VÄ>›œ_,Ø3Ğ@ °â´ô˜kalD+¡Ü4>õ™•€¼Ğ¼À 2¥óÓ¾4OÖgÚt£6
+³àÆcßÏ´Ø%Àìª°‚`J5-C-íO³~%çgó+Ü}¨Q`+`Ú	Œ‹Œ—Y#@8kô£Ã³æáõ×_7ş¥ë)PÉÓ[€jM‡`ˆÿ$†’>Í±ò’`íšoñ43%sĞnx;s.ùX$¡±}úÿ.ØWUŸv·” …ĞyIKí$„Sa#_ÖĞf†hY„©Kš"c
+€™-Mƒ„XÛ‘³ĞŒWhEØ ĞTĞ0Òtf|˜reú˜ë`p¯”`É‡ö‘-ü“ä_R®ä|Êt?jFİÊÆj1„	)3KÂ?0j¬Ú«¶õF@DQoÄ#¹šC4´”Hª¥jDŠ@®DÁôbvü\+ŒTîˆ`0exÂğª£ÅF,M1Í@®DÑìàª}B YQ4ËT;„@QÔ\-š.E³ ¡v!PEyl”"„À0DÃ€'„@yDå±QŠhêPKE@Ö%„@£# ¢hô;¨ú:  ¢¨Èº„htD~UÿÚ" Ò"Š ƒ~„€hE[è(M€€ˆ"À ! ÚB@DÑ:J«-*½aQ4Ì­RE…@~ˆ(òÃ^Wƒ€ˆ¢an•**òC@D‘öµ½²JUD Å€L"êıTñ9VQ5F G¡PP(D+…s‹ëVğ¿â¸¼ÁÉëúí^·ÆÏ·Š¯h/+VäuCb­_©zğ:—ŠÏ#ì<®İ‘k:dr1# QÄ\¿8ë¦Z	n†@ìD‘¾•ºÙmQs…@\ÄNq¡¥ÚnŠ@ìD1‘ßÄ=9! òB >¢hÄ®~ˆ¸''„@^ÄN:0ˆ{rB@ä…@ìDñµƒ¸''„@^ÄNšõÈëÉĞu»1#6=v¢±ÆŠB îÄNk:"ˆ{rB@ä…@ìD1Ÿƒ¸''„@^ÄN“90ˆ{rB hÌ6ÄNŸ9¬ˆ{rB@ä…@ìD¡Y¼]Wdˆ(2UUP¼ˆ(6s`÷ä„@{(½VÄN3xÃ÷ä„€ÈØ‰bqON¼ˆ(~q`÷ä„€ÈØ‰B³y=#\WİØ‰¢;ßµ]Dƒ@ìDÑÛ‘BÜ“B /b'Š¾âœy!;QÌèÀ î5³SÛ„@ÜÄNo9|ˆ{rB@ä…@ìD¡Y¼]Wdˆ(2UUP¼ˆ(øÎé>İêÔ~ŞÚ…\Ê9Òö(—¨x!PØ‰‚ï<rõW|k Au¤à^p„¯÷i‰å„@åÄNcyS÷ä*@`ÏóËj.÷º0µŒ^ÕI#å„@åÄN?yS÷ä*@àÏó²Ëè.ãº°àäî&4òx”œ¨.EåêdNÍzt¸Cü”ôC:Èa4?ÆGa‰è±E‡£Ì44‡pù!´L”‚B 2b'Šå½ˆ{r@ Í"=…0qé±|!Ğ!b'Š%¼5ˆ{r@ Í"=…0qé±üæA .-‰(fu÷ä:ˆ šB¸ƒ§+»@ìDñšWqO®ƒ Ağ?QÂ<]Ù…Àpb'ŠØg=ÒúÅêßé·‰µ~ª—Y50°ZÿÅNµn—Ë/
+ı#–½nHÌuŒ¹nÑ×­Ëp…ÄN‹z;÷âuıû÷7‰0¨÷3PÏ;Q¬ä` îÉ	!±Å¤âœy!;Q|îÀ îÉ5jN!;Q¤á‚TUÍ‡@ìDÑ|ˆ«EB ˆ(¶uL÷ä„€ÈØ‰b*qO®(«¨*±® Um´
+B cÄNß{s÷ä„€ÈØ‰B³y=º®È ;QdªMPİØ‰b.¿#ˆ{rB@ä…@ìD±®ƒ¸''„@^ÄNs:0ˆ{rB@ä…@lDQŒÃK¸''„@^ÄNšõÈëÉĞu…@Ø‰"SU…€ÈØ‰‚­ú‘¼ğÑu…@·C Tƒc'
+şùRªîŠB NÄN“9ˆ{rB@ä…@ìDÁÿ¤@òÂG×BÀˆ(4ëá7I®yhÔ–ÄNŠ«ê-š
+Ø‰‚İ­¦]†@ìDÁîVH£áªú
+¦B v¢ÇÑFÜ“m# ÔÚ!;QüàMGÜ“B /b'
+ÍzäõdèºB ƒ@ìD‘©ª‚B@ä…@ìD±¢ƒ¸'—'ºv÷F v¢XÌoâœy!;QÌèÀ îÉ	!±Å[â^óº{î¹Ç6Ø`›yæ™mœqÆ±yæ™Ç6Ùd#>ïV¿÷Ş{–$‰M7İtöÏ?ÿŒPõ×_?¤'IÒâO1Å¶æškÚ‹/¾Ø*ÿrË-â[E–8à:«¬²Šm·İv­R{ì1Û~ûím8-²È"vĞAÙ‡~Ø*_=¸O«®ºjE—¤“N:©İqÇå)SìDÑô³<ğ€Ñ)>ÿüsÛj«­ìÚk¯µ]wİÕ~şùg#~ğàÁ¹>/^x¡Í;ï¼aP×R•™uÖYíÁBı÷ß?Ôá…¶§zªÔ)mÆpÂ	öşûïÛÉ'ŸÜ’oÇw´Å_<Q¿~ıì²Ë.³¥–ZÊ®¿şz›şù;u–Âë˜zê©íÌ3Ï´-·ÜÒ>şøã:]µ:—‰(ªÓÊˆK¹úê«m®¹æ²Ú`+¯¼²m»í¶vÍ5×Ø´ÓNk=ôPnµçÍ~ùå—[ß¾}mÉ%—4Â¥*3öØc[Ÿ>}‚,³Ì2¶Ç{Â#ïi§†W±|ıõ×6`À +
+6æ˜c†ó¸îÙgŸ:şf›mfk­µ–{ì±öÂ/X¯^½ìÀycÿYwİumöÙgí‹½®ÙúÅN“ze÷šÓ}ñÅ6Æc„7e¶…£:ª½ûî»¶ûî»·Dÿúë¯¶Ã;„a C:ï“O>Ù’şÊ+P”Ÿ   IDAT¯„r 6ÚÈ]tÑ6ÑDÙqÇ†3¼Õ8ŞtÓMN2”ù¹ÿşûCÖ[o=Ûb‹-ìºë®³ü±LîÖÑã?~Ğ †Ò:¡£SO=Õ¦šj*cH“f=æ˜cl¾ùæmOãRôÑG·[n¹e„aÚ›o¾H—¶N>ùä!üôÓO§§ÿöÛo·E|ø–ÓO?½ñ¦ç~„Dÿùí·ßl¯½ö²Ş½{‡aaÿşıÃu’$14@Ï2‚kïqÂ¾ûîk\pA®C&êÑ‰(vòÆ î5§cxñøã‡·6ó‡Ê/Dİ|óÍíÎ;ï´+®¸ÂŞyç[l±Ål…V°!C†pFm´àzè¡¶à‚ˆQFÅN?ıôğ†LP×}ôQÛ{ï½I.+_|±¡áL9å”¶ñÆç–=!“ ¡p^ş¶ÏD·düN›’$iÉûúë¯Ûê«¯H°%2˜l²Él¤‘Fj‰¡³C¢L0A°“€/Ø`#IÉ¬±£@‚}ô‘]uÕU†díµ×n)‡!ÃŸ#8Â~øápC9$¤g¯"†ı´wÈ¶ì²ËÚÈ#lwß}7‡!±Å¬"â^ç\ìg1Ì8òÈ#Í`ùå—7n:
+ôï¿ÿn©şóÏ?Şè'tRxN2É$vôÑG‡·ï)§œÒ’ 	`ôã™qÆmÃ7´qÇ×–^ziÛyçÃğà÷ß'yùé§Ÿì¦›n2Ô|Çk,Cm†¤8.'É}÷İ´Ş®Ø]Êå-‡$yëSÿ4í}·UüñÇa–ÆµçƒÑ_ıeçwaX…¬Î9ç£MàÊùÚ€ó>ûìcã7^ Ö£:Ê •gy†,vå•W#3ÚxvØa†KüTzĞ‚h#ÄT¢˜(£b'Š×5Ä½æt=zôãkŞšƒ
+“³å–[Ú„Nh¯½öoóy¨xñfM‘H’$ô}öÙ4*ø-´Pğ³?ØA²Ç3Í4S08–3ªA¼5ÿóŸÿ´œÆğ(>‡Î$IxãÓ: ÃŸ3Î8Ã°Y´ĞN€Y²Ğ¹ñHÂO…Ÿ$ÿ^3Işõ¹&éhMdjã Ùlo¼ñ‡Á¶14ûÁXJ{Áõ¾,âCâRALÃÅ~GîmLÛ[\NŒÇ±EÁACÜk~ÇƒË,ÃO<aÌ"`»`ú–úé§öçŸ*t’üÛ1’$1Œ{Ÿ|ò	YZ¤gÏ-á4PÇ¸œ´T'œf¾ûî»ûI’$†Æƒ–sÉ%—d³ZvÖƒz3Sóå—_ÚN;íÔ*_{C‡YĞªBÀ°/¸fAğS0¹Â°!ÇçÚØHg…r–0,‚Œ‹1!üä!m+Å‰x›~)éÈ=¢~ß~ûm©b¢Œ‹(¢­Z•â­…­Y\fŸ>}‚Ú›ªÁO<q6Ğ1Šr)>¿ø¸ø¡LÓÎ‘ÍÿÖ[o…Ù–³Î:+Vöz% ‘lşì¬õ{î¹¡eóTf@¾,y°7Ü|óÍI‘ğFæZÓ°Ä¥ViûÒ8üo¾ùÆĞ,¨/C°”˜HCHÇ'mÂ .•¯¾ú*às]ÊÍâ•†‹ï×†,F($Òˆ.EÚ´¡_q¯ùoó9çœ3KµY,î¤‘ïûï¿Öw:G*Œ¿Y E¶ä‘Gi•üÒK/mCe«?¸øâ‹ÃXœÅMéuRŸ¸W_}ÕĞz<kUÓKa‹·°åp\,Ô'Çƒá³i<Ã%†$³Í6[ˆb(†±5ûäC?‚`$I˜]ââRÁ˜œ†‹}Î«ô¡õ¤í-.'ÆãØ‰C&#v]®j,Sn|pX;Áb%ÆÙØ˜¼õÖ[[ÂR••€Ø †L¦8ùÊ	oXŒrh0¼å Vƒ2”Éƒ–Ãº¦W“$É&…0cv¦±a„ˆ*ş`(œa†Œ¡K¶XÚ¼Í6Û³9„/ºè¢ é0C²Ë.»Øk¬a{î¹g˜â<d1½ÌÊN:$³¬ï­·Şš,†1“•¯ÌjğvÇğÉB7fy 2aŸ¹ñÆÃJJÊ9üğÃa	i¥¤Ò{„¡•{ÈB±RåÄ;QŒç !î5§c#‹«PiY#ÁÆ@:6}°i=-x¿ıövˆ„)¼ÕV[ä6…r0î¡@BçŸtï½÷†éVf8ŠÓÒc¦±¤†Æ4¾>Ó°¬N…°²åÑ‘!P¬ÌN`/ Ğº ¾O<Ñ ÎpXˆÅ´)JÚ¹‘ayÀù¹ç¤„a—Å[à’Va‚œYpÆ=T!&ÎO¯E8+•Ü#0fHQgÏ9;Q|çà!î5¯ãe*Û o:	aŞÙV3£ ™ğÀóf»í¶ÛÂ4dš‡·1çÒ	Ò¸¬î¹ç†E>SÌªdÓ	¯¸âŠa½S¨—¦e¹>cx:u¥Ë´Y»Àâ¨Re¦q,02dˆÑáÒ¸Ô§]—^z©1sNCŒÀiÔG{ ó3sÁ°ã†n°tØ‘æa¨€í€¶Yš,&I’¤Œ6qCê¬§ÀÀŠ-‚rĞ¬Ğl#íİ#ò@tL‹³øã.IN(˜ñ@ê‡.“7tp†ÉX÷g}0æ²pL¦°:­®³õ‚°°©ĞÆÎ–‘Çy±E˜èš9#À"(†Øò¬
+×gŠŸ™lh/éêÌÖ f™^fÖ¦£çç™?v¢ØÚÁAÜ“ë,Ìï7ÊGS´1IcÏ¢*ó’$IŒïL˜=aH‡0t*5¥\Iù†Í¤­E[•”“GØ‰bqONÔ]®Ø‰¢§×qON¼ˆ(†:0ˆ{rB@ä…@ìDÁŒ’>º®@ìDáU”kJÔ¨†B v¢XÔÑDÜ“B /b'Š•Ä=9! òB v¢˜İAÜ“B /b'ŠWÄ=¹ŠPF!Peb'
+f<*7[Å	!Ğb'Š´Ey…€¨±ÅTŞnÄ=9! òB v¢ØÖAÜ‹Ä©B ";QÌâ÷qON¼ˆ(^w`÷ä„€ÈØ‰‚$/|t]! ¸ˆÂ+$'„@|ÄNë9dˆ{rB@ä…@ìD1‡ƒ¸''„@^ÄNã;0ˆ{rB@ÔÒWˆ(¾õj#îÉ	!±3H^øèºB@8±…WQN¼ˆ(X¾ä“®/ª€@ã;QğAÒ¸«æB 	ˆ(ÆuŒ÷ä„€ÈØ‰â{qON¼ˆ(˜ñ@òÂG×mTÑZ";QÔ²í*[
+ˆ(Võv îÅë`aPïg ="v¢XÈÁ@Ü‹Ó
+……‚¤Pè…’Å°àÙc…å±­W¯ˆ(z9ˆ{Qº‚×ªˆÕªƒÌÉ–?Àã²Ç
+›µ‡Õú/v¢â  îÉ	!±EÊ¤yá£ë
+!àÄN^E9! òF v¢İBÜkV§v	øˆ(p÷ä„€ÈØ‰bAqON¼ˆ(v`÷ä„€ÈØ‰¢‹³yÁªë
+æB v¢h.´Õ!Ğ ÄNK8®ˆ{rB@ä…@ìD±¼ƒ¸''„@^t(êRå)ı*ˆ{rB@ä…@ìDñ±ƒ¸''„@^ÄNšõÈëÉĞu…@Ø‰"SU…€(B n‡±E_GqON¼ˆ(z;0ˆ{rB@ä…@ìDÁÿô@òÂG×BÀˆ(øŸˆWUNÔ],ƒ@ìD¡YÌÍRPä…@ìD‘.º®b'Š­¼®ˆ{rB@ä…@ìD1­ƒ¸'×D¨)†@ìD1¾ã‰¸''„@^ÄNß:0ˆ{rB@ä…@ìD¡Y¼]Wdˆ(2UU°B”MTØ‰bYo1â\ ĞÏÛ°K9GÚåŸ±ÅRâ\  	ğO‰¯ó¶@
+îGøz‘™xP.&b'Š,Ä=¹&@`oÃ?.«¹ÜëÂ—ÁáUı˜4òxP.&b'Š·,Ä½(œ*Ñ5îñÓ_vİ…ı&srÂÄ‘F’‹	Ø‰B³1=-Õ©Ë!^Ì/.8Èa4.Ä‘æA¹Øˆ(bÃKõé:hhÅ%GZq¼#@ v¢É1BÜ“k"ĞĞ Ò&&.=–1E)hõHÄ=¹&B Í"maâÒcù‘!;Q0m†D›ªSĞ Ğ$ÂU(REÔ
+Ø‰â)o8â\“!€ñ™·	!ìA¹Xˆ(bŸõHë'ß¬3ÜifHgÎÕ9Ã1w«ãÊ•;Q”«w4ñ…B¡¿¤ÓììØ!Â°“ÏQ½:BìD±˜¸¯ëß¿¿I„A½ŸzöˆØ‰bEqON¼ˆ(¦r`÷ä„@c#ĞÈµ(>rp÷ä„€ÈØ‰"µlç…®+„€#;Qxå„€ÈØ‰b3qON”G@)µE v¢`Ó¤¶(¨t! ÚD v¢Ïk¸''„@^ÄNß90ˆ{rB@ä…@ìD¡Y¼ŒÌu±…î ;Qlã!îÉ	!±ÅÔâœy!;Q°;’>5¿®. Ø‰â{qON¼ˆ(4ë‘×“¡ë
+±E¦ª
+
+!±ÅÚâ^ÇÎB :ÄNóx3÷ä„€ÈØ‰bJqON¼ˆ(>v`÷ä„€ÈNE*¬Y:­Ë¶ˆ(Úª»Ò„€¨±Åtâœy!;QláÀ îÉ	!Ğ
+:ÄN9ˆ{rB@ä…@ìDñ”ƒ¸''„@^ÄNšõÈëÉĞu…@Ø‰"SU…@Ğ¥Z!;QLãµEÜ“B /b'Š­Ä=9! òB v¢˜ÕAÜ“B /b'Š×Ä½æqƒ¶$IÚ”—_~¹!|ÆgØh£V¶î¡íEmïÕ«—­¹æšvË-·´:o“M6±UW]µU\­î¹çÛ`ƒlæ™g¶qÆÇæ™gãúÄ§×ä$Ib<òHÕmüØ‰¢©g=<òH{ğÁKJïŞ½+zÏ:ë,ÛvÛm+ÊS¦´í<ğ€í¹ç6tèP[k­µìºë®«{5©Ã*«¬b˜p“   IDATŸş¹mµÕVvíµ×Ú®»îj?ÿü³¹Q©I&™Ä?üp›fšÍf¯¾úªÍ4ÓL$5½ÄNM}f›m6ëÓ§OIk¬±*jûsÏ=WQ¾Ø2¥m_f™el=ö0:ëSLaÙ7x½ê|õÕWÛ\sÍe´8ÀV^yå@¾×\sM;í´öĞC…ª@‡zhQ<ûì³!¾;üÄN«ùM@Üë~îÊ+¯´QGÕ^|ñÅ–Æ?ıôÓaÈróÍ7Û
++¬`ç{®şù!.}ó}øá‡¶úê«ÛDMd“O>¹­³Î:öÕW_µ”qæ™gÚÔSOm=ö˜-´ĞB¶÷Ş{Ûk¯½Ê Ã¢îÓ)¦Ÿ~z£cüóÏ?-ç¾òÊ+Ö·o_C5ïÙ³gèTt°–Œ4ÒHáLÔş(ñóã?†7>Úù[l1»üòË[ådX°ÄKØøã4”'xÂ–_~yÛm·İZåË|ñÅ6Æc„ögãÁşİwßµİwß=Dg‡ÿıïm‹-¶°·Şz+œwÊ)§„<¿şú«í°Ã6İtÓ…!Ì’K.iO>ùdHã,O=õT[xá…mÜqÇ5Ú ÆıõÉÑJìD± #‡¸×ıÜÆol+®¸¢í¼óÎ¡ñ<d„é¨¨é÷Ş{¯ñ n³Í6F÷gW—‰ûí·ßmƒO˜rşşûïP6:]ÿşı­_¿~¶ÓN;Ù(£ŒÒöİwßğ6}çwì¨£²#8Ân»í¶öûï¿Ûæ›onŸ~ú©íµ×^vÙe—Âˆèl!S'~^zé¥P“º”+bíµ×6Şâ7ÜpƒA†åf›mfwß}·ñ÷ÓO?[ş…^¸ß~ûÙûï¿o)‘¯X^<şøã ï¿ÿ~ûá‡Š³ŒpLç>è ƒlÆg4°OÉ|î¼óN»âŠ+!ê9dÈPÆé§Ÿp%?$Äı„ìN8á„ëOìD1‰‡¸×|?IF4jÒñÒÖbƒ@£¸øâ‹íì³Ï4}{¥y²>ö’K.	*ò¬³Îjhtœ¬±p¨Û 	v3Ì0CK«­¶š­»îºámˆqo–Yf1ŞÊd #ßtÓM¡ğ6Ek9ñÄ²ĞNÈS©¬í>Işm;j?í;î¸ã,[—lYwİu—Ñ‰éhóÎ;¯¡Í0Àæ{n#òŞzë­öí·ßÚI'Ú¾ÔRKÙ1Çco¿ı6Ée6ŞühL0AĞÖ¨SJ®eOÎ$<ÿüóÁÆÂõYdC+;úè£mª©¦²ô¡ñÌ7ß|¶é¦›¢»ï¾ûŒáN¦¨è‚±Åâ^ó9ÎRÆLfikyÈPsy{vØavÁ•5M/öy3òcÈ‘¦1ÎÆšÿÌ3Ï¤QÁGıÌC‘ÌaPá¿şúë–(Şş¼5§œrÊ r£>“9áW*Ù¶_ıõ¶å–[Ú;î†:¥Ê@íïÑ£‡1¬È¦süúë¯‡¨÷Ş{Ï&œpB›}öÙÃ1?‹.ºhè„Ë	åxàF9ƒ2:/Zu¢<†eåÎÍÆC–#<rö¥ñI’„…&DD„A£I|öÙga˜Y’«ÄNM=ë‘ôú4çœsÎVÏê)ø$IÂ˜¶UbÑÃŞ¼IòïÛ:IşõyØIËfç­œ=&ŒÚ_J° 	 eğüóÏ?áH©¼íÅeÛƒfyğşøãw?üòË/Ã:I’VEc‹HÛõÍ7ß”$Ñ,i¶:¹ÄúÂ/Z$t‰¬#DQ0ah—$I Ò$I‚&øÉ'Ÿ„üh/å~ùå—@HÔm¥•V
+šPÈéOìDl9Õ†N„J>é¤“Ú!‡Òf-&xbƒxxÈ‹…iÈ6On'b6†!CÆı|ğA;gUŒ…†öP|í*¥µ0Ô`¶„üÆ÷ßøå˜ö$½”`_À–ğİwß¿Š5±2‹ hXÅ¸sùËfÃ7Ş¦cÏ9çœ`HŞ~ûíÓä(ıØ‰b+Gq¯{:4>ÇÎÀX‹9cérhÌ1Ça†cé¥—„ÁÃ@2?ÊWI<‰€zæ¿øâ‹Ó`—ı” ˜m).Œva/@½Ï¦1u™5˜Éa˜„¡3ÍÃP¬Á¤éäGƒÃö‘Æe}½+\ÓB98ƒy*½zõ2Hr1 ³ş‚06Œí¶Û.Ì’ ­«ÄNÓ:pˆ{Íçx`˜Z,%XêéÌp`X`Â°ƒñ3³¼yAMã©§2ŞZ¨çı|ƒa
+†³3}wğÁÛ²Ë.k¥TzÊ¨TètÂóÎ;/U±Ôc(ÄB|¥å¯¸íLSOÚG›È“••W^9LsÒ.³ØşóŸÿ6ÚLŞ5ÖX#Ls2#ª‰n«£3…Ìì×fXÀ,÷ƒ¡Õúë¯oH±UP~±POÚÍPœÁ˜¦Ø˜Æ†„0@c'4hP8»ZÊwÜa™!l™•
+"ı‰(ÆqÜ÷šÏ1öeÁQ)azíØcµ!C†Ë}Úz:'€ñ<q[o½u³öNÓ³gÏ0-Š‡5—2XwÑËßlœÓY¡ã
+…0eÊ”*=ZÎ>ûìc§vZËzƒJÊÏ¶™–“O>Ùè¬Y½¸:¤¹Ë.»„õ¬a&gñÅYi;*=$„ÂLÃñÇ–”§Ó¿!cÑÏşûïo,®¢<Ö@,·ÜraÖƒ·<Œ‹N	‡`M‚JW”rı6ÚÈ˜–exÑpÏh#'A
+L©rŒ–‡š—yHUâ!ŠÒ1¡”NmĞXÔPÆÆm	VxV	¢6ÓÒ¦òÄhÇFVŞ°Çx£7Şxã…¥Æª3{v6ƒŸkg‡¼‰£“PF*¨úAzÌÛâa˜ ‘1ae%¶:&†WÖm¤ù‹ıRmgıS°hÙ:A–CZ;SŒ¨ø¼¥é¤i:>KªYİ	Ft^ìh,€"½œ@‚Lı¢°ø	,£¤ç@>Äƒ9qttf0ˆã~Ç
+dƒ†Ç½CÛÈ–Áp2ápBó€ G}tNVb'Š‚#‡¸''ÚF€Ed¼áY¨FdÁ¸ÆsÌ°J³í³•Ú±E[uWšh…ÀØcmh}ôQšÌ?ÿü†1“µ'éÌH«tP1±ÅVŞÄ=9!Ğ>C.T{„!Ñ†nØş‰ÊafåAˆ(˜ñ@Ê·@)B@ÔØ‰¢§#€¸''„@^ÄNCÄ=9! òB v¢`ÆÉ]WT	Æ.&v¢hltU{!Ğ$ÄNìn…4	Üj†hLb'ŠVÄ=9! òB v¢˜ÆAÜ“åP|­ˆ(Øì ©5*_6ˆ(˜ñ@Úh‚’„€¨5±E­Û¯ò…€¨ Ø‰‚åÛHMQ–Ú  R…€YìDÁaˆî•9";Q,ìØ îÉ	!±ÿ‹É]WG v¢`Æñª6£S›„@c ;Q4Šª¥hrb'Š©Ä=9! òB v¢ØÖAÜ“B /b'
+şÛ,Ò	|tŠÕB v¢xÅŠ¸''„@^ÄNÌx yá£ë
+!àÄN^E9! òF “DQ·j¯äWBÜ“B /b'ŠEÄ=9! òB v¢˜ÌAÜ“B /b'ŠÏÄ=9! 2Ô5;Q0ãÔ]LÖÄN­k«#! rA v¢èë¨ îÅë`aPïg ="v¢èí` îÅé
+…Â€BAR(t
+ƒ…BÉbXğ¿ìqá†¹f½zEìD1®¸¥+x­$fÅ`™!Ùóx\öXáöñuÈjëb'Šï½ùˆ{rB@ä…@ìD‘¾MòÂG×BÀˆ(¼ŠrM†€šÓ€ÄNÛ8¦ˆ{rB@ä…@ìD1µƒ¸''„@^ÄNÌx yá£ë
+!àÄNÌx ^U¹
+P!Pb'
+ÍzÔä¶«P!Ğ1b'ŠµF¹…€¨	±ÅúŞjÄ=9! òB v¢`«~$/|²×UXt[b'ŠIıÎ îÉ	!±Åçâœy!;QhÖ#¯'C×b!ŠL•B 6b'Š0Ä=9! òB v¢XİAÜ“B /b'ŠÙÄ=9! j‰@[eÇN¯zå÷ä„€ÈØ‰B³y=º®È ;Qdªª y!;Q$âœh\½æ±EqON¼ˆ(q`÷ä„€ÈØ‰â	qON¼ˆ(4ë‘×“Ñ@×UUk@ìDQ{t! ÚE v¢˜Ç[€¸'×ôó6,äRÎ‘¶G¹DÅç‡@ìD±¶Cƒ¸'×@üSâë¼-‚{Á¾ŞC¤A&”‹	Ø‰b:qO.ª|Í¼¼\Vs¹×¥ï0!¼ª‡I#åbB v¢x×ÁBÜ“kîñ6¼ì2ºÿØi2÷'w!Liäñ(¹˜ˆ(4ëÓÓRºâÅüâ‚ƒF#àBi”‹Ø‰"6¼TŸ®#€Æ€æP\q¤Çë8b'Šu#Ä½æsİ¸Ehh)„‰KåG†@ìD1·ã…¸'×D 9 A¤M"L\z,?2b'Š‰/Ä=¹&C M!ÜdÍk®æÄN_9Üˆ{rM† ÄgŞ&„°åbE v¢èô¬G Oë'ß¬3ÜifHgÎÕ9Ã1wkëb'ŠÚ¶¾
+¥
+…ş’Nc°³c‡ÃN>GUx„+*"v¢ØÚ[¸¯ëß¿¿I„A½ŸzöˆØ‰bqON¼èQÔ±²ãøµ÷ä„€ÈØ‰âqON¼ˆ(RËv^øèºB@8±…WQN¨sDìDÁŒRgXt9! ²ÄNÌx Ù:+,„@ˆ(Æs<÷ä„€ÈØ‰â;qONÔ	]fb'
+ÍzŒpË!ê@ìDQDtE! F@ v¢X×kŒ¸''„@^ÄNs90ˆ{rM€ÑÄNlå4$¸ª´hb'ŠOhÄ=9! òB v¢Ğ¬G^O†®+2ÄN™ª*Ø.Ê j„@ìD1Ÿ·qON¼ˆ(Öt`÷ä„€ÈØ‰bvqON¼ˆ(^q`÷rvº¼èÆÄNšõèÆ§š±E<H©&B #;QP?¤ß"5]Jã.Ò   IDATä@°<‡yâœy!;Q,êÀ îÉ	!±Åãâœy!;QhÖ#¯'C×íf´İÜØ‰¢íÚ+Uº ;QÌá( îÉ	!±Åzâœy!;QÌàÀ îÉ	FE ñë;Q¼í#îÉUŸşÙN8á[mµÕl‚	&°Ş½{Û:ë¬c×]w]µ/Õ¡òlI’ØÍ7ß\ö¼SN9%ä:th»yÖ^{í²yZh¡PÎı÷ß_6ÌzD‚f=jtƒzê)›}öÙíÌ3Ï´VXÁ.¿ürÛc=l¤‘F²7ÜĞ6ß|ó]¹¾Å;î¸vûí·Û×_=Â…_ıu{íµ×FˆWÄˆÄN#ÖX1]Fà÷ß·í¶ÛÎÆg{òÉ'­_¿~¶Ê*«mÒ¸ì²ËìÁìòµò.`ê©§¶9çœ³¤–tÍ5×ØK,‘wâú±Å"â\µ¸ñÆíÅ_´şıûÛ„N8B±m´‘}øá‡¶Ì2Ë„´W^y%¨ç4Ò]tøbYŞÖ‹,²H é§ŸŞ¶ÜrKûâ‹/Âyüüøã¶ŞzëYÏ=mºé¦³İwßİ
+…‚Í=÷Ü$WAÚ.â?ş°•W^Ù …âœW]u•­¸âŠÅÑ:.@ìD1¿×qO®Z¼óÎ;Ö£G[k­µÊ9ÕTSµ¤6Úh!|è¡‡Ú‚.h§zj8f\¿æšk"øè£Œ÷ØcYÖ&°ÓN;q÷Üs=ıôÓFÇ½à‚Â'RÃŸ$IìÏ?ÿ´u×]×xà£éå¨ËÛo¿mk¬ñï{(I’4I~	b'ŠI¼Îˆ{rÕBà½÷Ş³i§ÖFyä¹Øb‹ÙŞ{ïm,°@8Í ûÆ>ûìcã7^ ‘£:Êüq{æ™gì“O>1†0ûï¿¿a4D{dşùçŸp~½~¨ï¬³Îê’^cÕUWšqõ®×l$‰(Ğa‘FÂ4úºòV/Õ1Ï'I†I’#g¶1töìñ/¼`K-µT6Ê_|ñpŒ¡ğİwßa´ğÈ©^vÚˆøeÃéê«¯&hÄ]yå•A
+úiØ‰¢à-@Ü“«“O>¹}ğÁa-“„Y}õÕÍ,›j†!ÁöğÃ?´Š#iV|ìß~û-Acæ!†ıŒ?şøÃBõó6İtScÚrÃÖÂ,HvˆT¿š4æ•b'ŠÆD5òZ÷éÓÇşşûo»öÚk[Õ”¡iÈ¤“NÚ*­ø`ì±ÇP¼á›o¾	Y9?%„ï¿ÿ>Ä¥?)¤Çõğ1´b„Å{ıõ×»m¨Çµ›á±E_qO®Z,·ÜraÊÃÇ<B±¿ıö›¥Ã†3sÍ5—=úè£™³Aƒ…c¦$™åà Ã!>‚qñ‘G!XwÙ`ƒB}ï»ï>;:ˆ~ìDÑÛÛƒ¸'W-°œwŞyöÓO?ä±ÇkwÜq‡¡’³ ‹©Kfşïÿş¯ÍKB4Ìfœ|òÉ†fA™»îºk˜„D¦˜bŠ0Å:`À »âŠ+ì«¯¾²İvÛ­Í2³‰¯¾új¨õJå‰'Èf	?MK}ì#­2;Xıõ’úüóÏÃº‘aÑò*@ v¢×Û€¸×l.ßö`˜d-—µo¼qèÔÌZ°VâùçŸ3mÕÍä¹çcÿ™fšÉ :#3éyL….¼ğÂÆ4)ÄA<ë*ğÛ“ƒ:(Ô‰õ©l±Å­NÃ–’¦¥şñÇß*Oz0å”S†VL>úèi´ü
+ˆ(Ü"4EY:Š Ó•x`.|÷İwa6 #'šÂXcÕRÜ3ÌÒ †–Èa†^xaXdõæ›oÚgœÑjW¯^½ìÎ;ï4ÊgE(³ÃN/éÍ3Ï<ázä+®ÁI,Ü*NKÑlÒ<ÅC¨{ï½×.ºè"’ƒL4ÑDáZ¥Ú2è' ;Q0ã„ÊêG|ˆ(òAEWB ±Å¶^[Ä½8å“N:É°mÄ\GÕ­5± ­k­#! êŠ@ìDÁŒRWPt1! Z#;Q0ã´®µ„€¨+ ŠºÖ¤®ÕÅ„€h@ìDÑº¶:B b'ŠMÄ=9! òB v¢˜ÉAÜ“B`u÷b'Š‰Ä=9! òB v¢øÊAÜ“B /b'
+f<¼ğÑu…€pb'
+¯¢œ¨+ºX	b'Šå¼Îˆ{rB@ä…@ìD±¤ƒ¸''„@^ÄNÓ90ˆ{rB@ä…@ìDÁ?†@òÂG×­.*­Aˆ(˜ñ@^U[4±Es ¬VG v¢˜ÚñEÜ“B /b'ŠmÄ=¹vP²¨±ÅÂŞrÄ=9! òB v¢xÒAÜ“B /b'
+f<¼ğÑu…€pb'
+¯bN•İØ‰bB¿;ˆ{rB@ä…@ìD±›ƒ¸''„@^ÄNó80ˆ{rB@ä…@DÑVÛ{"âœy!;Q0ãä…®+„€#;Qxå„€ÈØ‰b1q/^7`À “ƒz?Õìí•;Q¬è@Ü‹Ó
+……‚¤Pè…’Å°àÙc…å±­W¯ˆ(¦q ÷¢t¯•Ä¬³23${ş Ë+Ü>¾Ym]ìDñ7qON¼ˆ(Ò·I^øèºB Ë4C±E3`¬6†G v¢XÏFÜ“B /b'Š9Ä=9! òB v¢àËQ$/|tİÈPõêƒ@ìDñµÃ€¸''„@^ÄNšõÈëÉĞu…@Ø‰"SU…€ÈØ‰bkqO®ŞèzB E v¢`ù6’ÖW¾9 ;QŒã˜ îÉ	!±Åâœy!;Q4í¬G^7\×A v¢èL›tUF v¢ØÆÛ‹¸''„@^ÄNS;0ˆ{rB@ä…@ìD1®ƒ¸W¹SÎhèç5[È¥œ#mr‰ŠÏØ‰â{‡qO®	€Øúî:o¤à^p„¯÷i‰åbB v¢Ğ¬GLOK×ë²ƒñËj.÷ºô&„Wõ0iäñ \LÄN1a¥ºt{¼ˆ—]FwaH9™û“»&4òx”\Lt˜(ê\ùüzˆ{rM‚À!Ş_\pÃh\ˆ#Íƒr±!;QÌâ€!îÉ5	hhÅÍ!´âxG€@ìD1±c„¸'×D 9 A¤M"L\z,?2b'Š//Ä=¹&B Í"maâÒcùm!CZìD¡YŠ:]M!\§Ëê2A v¢èL›tNc €ñ™W!ìA¹Xˆ(–uà÷äš5¼Mˆ{r1#;Q,åà!îÉ5!¯x›÷"qªFIb'Šé¼Öˆ{rB@ä…@ìDñ®ƒ¸''„@^ÄNšõÈëÉĞu…@Ø‰"SU5 aˆ(ØªiX€Uq!ĞÄNüó¤°V„@Ã";Q°¡	Ò° «âB ˆ(r÷äÚD@‰B †ÄNšõ¨áÍÏ¹èKıúìhµûu;û‰¿»Tê>ñŒºÔÃµ×>>v¤ıYyË+v®KñÓäÙ×ãss±EnÀèÂ¶§cÀ–İ¯¶Ï\Ûå9—]*u;zÆó\R÷Œ¸Äæ*mßU^ñe†ÉJî_æ²˜Ë£.=]¢q"ŠhnEtáaÒku­ájÆz^æÏ.‡¹ĞQ*]};ŸçÏ:†¥ÿ—ˆ$\iûĞpz>Œƒôööã](Ã½8œˆ¢’ûĞ=óĞ	ïö¦íÂ[³«E›y™7¸Üå‚Ö²©ûY7» n÷qŸ·îãî³/Ãş!ióx\©¡Ÿ¬¿áißºÜäB>÷J:¶â;ÛS¨Ãî?ì²°Kêìæò¤»Á?æş]FriËµ×¾¶Î}ÀÿvéíQDs+¢¬È^«_]pãøO5ƒ \îåıår…ËV.Y÷Û°:åÓ¦³®à>ù|÷éÀƒİ/vŒãòlá‰Øèx½<\ÊaGXÅ6q™Ş"€Òü»x6SÜGë9Ã}H·¾KºJÚWòÄa‘`C¿|oØqŠ¢"mT"5h6²ßßÛ—Ö?Nã²~{éÙ¼Õ
+g¯™³…şW^wŞpî—%Œo¼ıCB…?h¼ñ–ŸNMç*õ•0÷Ï‡-Â½6›ôîå9Šëş­.;¹ ÒOå~±›×#Pïù?"Oxø—\>rÙİ·„ÿ`GÔÀÂò‡&ä^I×‘öe şæqÉµĞ†<‡k¢ )TM|$æ¸„7`ZÏl8Ëúí¥góV+œ½f6\­òÓr(›7òÅi„ûC\t!Ş½VáO«ˆ6fò4¶ÿg˜âÁàşô_vqOIÉ[Úé·µÄ˜ñl=äÇó»àîóŒŒh=Ôò¦¼èñ¥\GÛ±qMÍí/”¡ŞúîCîÅáò'Šöqà­‰‘É†9–˜Õ
+ƒ;Ìl"—ìsÂX7=ocŒnÙO‚ájı‘^&#šx6÷ZÜĞ–Pûş?¹°Mà·'äÙ31ÌIëÏ? šÂãqÌ°¬î1\Ğ&>u»Íøî—rmöÚ
+x"7K•Ÿ[\öÈ­ºp´`L;o– ÷£Ò»×!Ç[™·{Ú1RŸŞ¤ku¨´Ö™¿vX®Knñ°_` Lëõ¤!†uü`R—í]fu9Ç¥”ëhû²³ÃÛ^hv˜ç‡q8E÷!ÆZ°tµû'¯\ªAt– ¼ËÖuA§Sd"ã~f<K§ŒÅWÔ1-€¡À-~Pj­ÆKÏ(Ã^’­C¡ÔPJ}fó|8l,†b–¤ÔLJ­ÛGrEnĞGa:o<†„;£AdÉÌÂ˜Á´¨{#8şI1ÄT¼*1›2€Àxûçc˜Â,ÉÁ~Â^«'z˜á ÿÀƒ­³!Äµ §LèÂ°ÇÒÆ¡!\ãŒº,€b†„ÿ—Z
+‹j´Ï/•‡kÿš"Šö1ê®9şçg6¢T§ğ¤;ŞÎ÷ûYŸ»”rñ›óSF0öaGÀv2g‰<Lç2l`¶‚ò0p2¬A{(‘İR`'`–ä5ÏÀF¿L}Şîa¤ÀÌÇÔûpÄK¶rÕh_«c:QÄt7š».¼¥é´åZ‰dTOD@s`Ø ±xT‹Ã¾1·a=ƒ  3IDATa\D#`]çxT‹cao~l«y,k/Ü#åQ!ôïö †h(“x†K4Çp2¡.L_¢y0ıÊEÈùéHû8¨áV,\ŸiÓâøº‹(êµ.$EãŞ;Õ¼!hJŠ(šã>ªB ¦ˆ(j
+¯
+Í€ˆ¢9î£Z!jŠ€ˆ¢¦ğªğÚ" Òë…€ˆ¢^Hë:B Q4ğÍSÕ…@½QÔi]§éW¯¥Ò"ŠˆnF\UQm„ÀpDÃ±PH2ˆ(Ê £h! †# ¢…BB@”A@DQ˜ÚF«t!ĞXˆ(ë~©¶B D¹À®‹
+ÆB@DÑX÷Kµ¹ Ğ„D‘º¨hjDM}{Õ8!PDÕÁQ¥¦F@DÑÔ·WÕA ƒDQ‹ª! Ecİ/ÕVä‚€ˆ"ØuQ!ĞXˆ(ë~©¶B D¹À®‹
+ÆB@DÑX÷Kµ¹  ¢Èv]T4"ŠÆº_ªmmPéeQ”FÑB@G@D1…„€(ƒ€ˆ¢0ŠB`8"ŠáX(T[Tz# ¢hà›§ªz! ¢¨Òºh`D|óTu!P/DõBº¶×QéB ¦ˆ(j
+¯
+/B Ÿ/äRÎ‘¶G¹DÅç‡€ˆ"?ì»ã•!AŞğë\ ÷‚#|½‡HƒL<("Š˜îFó×eoâ?.«¹ÜëÒw˜^ÕÃ¤‘Çƒr1! ¢hÿn(Gõ¸Ç‹zÙet—q]&s™Ü…0q¤‘Ç£äbB@DÓİèu9Ä›ù‹r€q¤yP.6D±İ‘æ¯šCqK‰#­8^Ç  ¢ˆà&tÃ* 9 A¤M'L\z,?2ò&ŠÈàPuê„ šDz9ÂÄ¥Çò#C@DÙéFÕAƒ@“@w£¦7^SEwÏš¥ÆhŸycÂ”‹E¬w¦{Ôko&â\^Tr]E%()O­xÅFÜ“‹EÌwGu‘  ¢ˆäF¨B fD1ßÕ­áh–ˆ(šåNªB †ˆ(j®ŠÍ‚€ˆ¢Yî¤Ú!jˆ€ˆ¢†àªèÚ" Òë‡€ˆ¢~XëJB aQ4ì­«iÅw÷ÒÙmê&÷Ë¹§<<Ë¹_©›À3öwyÔå[—]ØİêH÷Çv)v½<âX—‡\¾wyÁåd—Ù\²n? .k¹_©KÛÈyÈ—~â].\&u©—»Ò/t§KÔNDõíÉµrtL¶¬›°D-fñ¸Y]:ê®övuyÆe{öĞ|Àı]ÎwÉºıàU—¹].qYÏåtŸw+—j¸Õ½e\¶p¹Íe%—7]¨Ÿ{r—{n¶÷s¯¹œˆ¢¹îgÕZã}èò’Ô½Vn?zÄ¥#njÏ¼¼ A\ëa6Ù=Êıÿs™İ…¯Ü³)ıç.Ë*îŸçÂ‡cç¸O·¸†Ko—®:´›^oõÓÜ_ÒåVÂs¹ß7G27R^E#İ­úÖu¿ª8¤àÁVn#?¢ãºodÔ÷EÃÑğŸ9=H<oéTÿÙãŠİ	1‡Ë¯.¸½ı‡ğ~îÿí’uúñ#¹_-­Â‹jqx"ûÑı]R7– /ˆå?î²KêhçÌ~p‘Ã÷‚ÛÇÁŠ¡Ò1~<¦KÖÑ¦e=âv—¡.ºÌë’ºö®M>®Fó‘0¤ƒ„÷pÖQöş ş/zÂ6.9EE0u»L<ô#{«opáÊıÔ-è\xëºgäåÁ~Ë6tÉ:lŸxÄ}.ØŞuŸ75C†/‰—rØ(3Ûá²ùŞóƒ']–v©…ûÚEÃ îhÿe˜‚Ma}§ZÍŠÆÁË–.»à ÙÃ=€Æ²±ûçìá¬Ãæ‚V…–µ§'LëBGOñiïÚì;
+Æu„˜!&î_Z/l2Ø‚(íîx¿Æ).ÔÇ½¶ˆ¢m|º{*¶„×„Í\RÇÃ‡ğæsÏÒ‡™á7=ñD}á/?àMı÷Ÿu¡ÃP.¶ †-=ºÅÍä!†>î•uï{J–Àü°ªR£i¡‡y`ˆM‹!ø¬ìqådÊp„Ê9çzF %?»¶‡ĞF.t7—é\¹gí]›z‚ÅYy°Zÿö âF3„Hğxl<—¹Ï½ã¾F;ó¨¶ˆ¢m|j’Ú …Òùªz•ÿğÀ¹H2àaç8+ø³¼Í<h¼ğÀÅ.©ã!ÆæÁı{yä;.£!œíáÔa«H¯ŸÆûh2¼A‹ã«uÌĞ'[ì&GxáhN×_ÄSíÁƒ#8†EÑ¦ØÉ‹söõ\ü›÷ZéŸ·™1£Ä!dßŞµßğLÔ‹{ ©,áÇôm4ŒÒ	˜C\Ôâ˜MâA&-‘¥V*^qB E€q/Cfúx$³ ¥¦M¿ò4T]ì4€qüë	o4´
+ŞÆhht(†5de×+ˆ†p9!·~¹ô®ÆOãq¡s£¾ßìaì,›¸ÏT.DFGôÃ²ícO…¦pŸsşë~±lÃ!ŞJ®ı»gFû@C`X÷°ê’Ú  	?´ûı‡ö¤B~2´ü²"¢(†!À[ŸÏÏĞ2ÀĞ7,¹•ÇmMÁøÆÎUéƒèQF7ÂYá—ÙSŞRòàU·9êü‰UˆÇË`(ÀÔ­C+owÖ€<íhî$gmü1½Ìp 5f’•ºãg¥göÀÃã»à ŒJ¯F‚‚[ÊO®ÍĞ'µõlëñ‹%M÷äÒNDQÅ¶Fà?Ä‚ÎÔd©a‡'G‡@³ØÉ˜aØâÁàP‰yÓZÿ¤ÓœØH¹ÔÈ‡Á-kóğhÃÈz¢x¯½ğèª¸ã¼”I\ÎtÁQ|ŒœøX´E£z&'{Ä‡İÆ“Z9´µ‰21ÌqIWrí=3ë@Ü3†càÌz4ÊzÛ˜é`Æ	-(vc&¦ñûiÿº¦#Š›¥ß*#€5q/ª7³åŠçÁÄ ‡¥ÿFÏôKêj =ğFŞÜ#Æ Ûy˜¡-S~hƒüµŞŒ¼	1 2<ÁºÏjPì&Å8³”™4/®¬ƒ Óü\ƒzcdjô¹ag1|ÂfÑÏ±/0SÀ
+N´+Şàm¤3‚@(,°=Ğ§÷¼å!YfM HÄ£ƒc¨Åb/0&/†GH‚_Éµ©¶ V±r>Ú$K(’(ø•0À¢åğ/Ñ˜¸—ØŠ<©m'¢h¥ş‹ óò,°bœÎÃ÷olé_xÆÕÙa9ét :‹® ¦@QQñ1‚f;>–†;¼Q©ïöBètœ…=Ì¹îµrÌ.Ÿ¬û­2P_ò3~gºrƒ\˜FL³²6aS?àºdéld†í8O6Îa:C&$Á0rdvJ™-a¨€é1?lé¸,rCkb˜ÙTrmÈ€5%ÔíÂeˆiA8^¼¡…A¸[ûqLÃbÜ<ÈÛu"Šv!ê–è0¼•²gjÎ‘Æ1ÄÀ8GKãğ™>ej“)T³ÂCÏƒÉ°„q9çÓQĞ0 £l^Â	ª:š‘Ù ŒuXøIO…4Ê*%XüÓ|YŸ6fóSÖM` dF6/a´‡ù<ÀÛ¨ƒÚ±×“ŒéOf(¶|ç,jBKÁ(Éú†f´í"a¨^€!´â!´/"¸J®&ÇµiÆK´ğ
+ûAƒ€˜©a
+ZQñ‚¶aY[{"ŠÖxè¨ó - š³ª²â°—ãíYñÏ‚¸‹¾:pº²vEW.¤s›–óVd,\##eb£`Ú•79oÆ¦5–Š(b¹_¦?±M@µjª=j>ê5ßLÔê:*·E :B`DD#b¢!/9ÕLD‘ğº¬h$Dt·TW!"Šœ€×e…@#! ¢h¤»¥ºÖ•^ÿ  ÿÿ‚²¨L   IDAT +lÙ!óÄ    IEND®B`‚===== ./fdfd.png =====
+‰PNG
+
+   IHDR  ×   ¡   •ˆõ©  &ntEXtmxfile %3Cmxfile%20host%3D%22app.diagrams.net%22%20agent%3D%22Mozilla%2F5.0%20(X11%3B%20Linux%20x86_64)%20AppleWebKit%2F537.36%20(KHTML%2C%20like%20Gecko)%20Chrome%2F143.0.0.0%20Safari%2F537.36%22%20version%3D%2229.2.9%22%20scale%3D%221%22%20border%3D%220%22%3E%0A%20%20%3Cdiagram%20name%3D%22Page-1%22%20id%3D%227HCvqrll9cLzhTNDU-Ws%22%3E%0A%20%20%20%20%3CmxGraphModel%20dx%3D%221426%22%20dy%3D%22793%22%20grid%3D%221%22%20gridSize%3D%2210%22%20guides%3D%221%22%20tooltips%3D%221%22%20connect%3D%221%22%20arrows%3D%221%22%20fold%3D%221%22%20page%3D%221%22%20pageScale%3D%221%22%20pageWidth%3D%22850%22%20pageHeight%3D%221100%22%20math%3D%220%22%20shadow%3D%220%22%3E%0A%20%20%20%20%20%20%3Croot%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%220%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%221%22%20parent%3D%220%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22mB2G0DbziojQHZZWRsJG-1%22%20parent%3D%221%22%20style%3D%22rounded%3D0%3BwhiteSpace%3Dwrap%3Bhtml%3D1%3B%22%20value%3D%22%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2280%22%20width%3D%2280%22%20x%3D%2210%22%20y%3D%2240%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22mB2G0DbziojQHZZWRsJG-3%22%20parent%3D%221%22%20style%3D%22text%3Bhtml%3D1%3BwhiteSpace%3Dwrap%3BstrokeColor%3Dnone%3BfillColor%3Dnone%3Balign%3Dcenter%3BverticalAlign%3Dmiddle%3Brounded%3D0%3B%22%20value%3D%22User%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2280%22%20width%3D%2280%22%20x%3D%2210%22%20y%3D%2240%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22mB2G0DbziojQHZZWRsJG-5%22%20parent%3D%221%22%20style%3D%22rounded%3D0%3BwhiteSpace%3Dwrap%3Bhtml%3D1%3B%22%20value%3D%22%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2280%22%20width%3D%22120%22%20x%3D%22160%22%20y%3D%2240%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22mB2G0DbziojQHZZWRsJG-6%22%20parent%3D%221%22%20style%3D%22text%3Bhtml%3D1%3BwhiteSpace%3Dwrap%3BstrokeColor%3Dnone%3BfillColor%3Dnone%3Balign%3Dcenter%3BverticalAlign%3Dmiddle%3Brounded%3D0%3B%22%20value%3D%22Frontend%20(UI)%26lt%3Bdiv%26gt%3BReact%20%2F%20Vercel%26lt%3B%2Fdiv%26gt%3B%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2280%22%20width%3D%22120%22%20x%3D%22160%22%20y%3D%2240%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22mB2G0DbziojQHZZWRsJG-7%22%20edge%3D%221%22%20parent%3D%221%22%20source%3D%22mB2G0DbziojQHZZWRsJG-3%22%20style%3D%22endArrow%3Dclassic%3Bhtml%3D1%3Brounded%3D0%3BexitX%3D1%3BexitY%3D0.5%3BexitDx%3D0%3BexitDy%3D0%3BentryX%3D0%3BentryY%3D0.5%3BentryDx%3D0%3BentryDy%3D0%3B%22%20target%3D%22mB2G0DbziojQHZZWRsJG-6%22%20value%3D%22%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2250%22%20relative%3D%221%22%20width%3D%2250%22%20as%3D%22geometry%22%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22150%22%20y%3D%22280%22%20as%3D%22sourcePoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22200%22%20y%3D%22230%22%20as%3D%22targetPoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%3C%2FmxGeometry%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22mB2G0DbziojQHZZWRsJG-9%22%20parent%3D%221%22%20style%3D%22text%3Bhtml%3D1%3BwhiteSpace%3Dwrap%3BstrokeColor%3Dnone%3BfillColor%3Dnone%3Balign%3Dcenter%3BverticalAlign%3Dmiddle%3Brounded%3D0%3B%22%20value%3D%22HTTP%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2230%22%20width%3D%2260%22%20x%3D%2290%22%20y%3D%2250%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22mB2G0DbziojQHZZWRsJG-10%22%20parent%3D%221%22%20style%3D%22text%3Bhtml%3D1%3BwhiteSpace%3Dwrap%3BstrokeColor%3Dnone%3BfillColor%3Dnone%3Balign%3Dcenter%3BverticalAlign%3Dmiddle%3Brounded%3D0%3B%22%20value%3D%22Clicks%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2230%22%20width%3D%2260%22%20x%3D%2290%22%20y%3D%2290%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22mB2G0DbziojQHZZWRsJG-11%22%20parent%3D%221%22%20style%3D%22rounded%3D0%3BwhiteSpace%3Dwrap%3Bhtml%3D1%3B%22%20value%3D%22%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2280%22%20width%3D%22120%22%20x%3D%22360%22%20y%3D%2240%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22mB2G0DbziojQHZZWRsJG-12%22%20parent%3D%221%22%20style%3D%22text%3Bhtml%3D1%3BwhiteSpace%3Dwrap%3BstrokeColor%3Dnone%3BfillColor%3Dnone%3Balign%3Dcenter%3BverticalAlign%3Dmiddle%3Brounded%3D0%3B%22%20value%3D%22Backend%20API%26lt%3Bdiv%26gt%3B%2Fapi%2Farticles%26lt%3B%2Fdiv%26gt%3B%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2280%22%20width%3D%22120%22%20x%3D%22360%22%20y%3D%2240%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22mB2G0DbziojQHZZWRsJG-13%22%20edge%3D%221%22%20parent%3D%221%22%20source%3D%22mB2G0DbziojQHZZWRsJG-6%22%20style%3D%22endArrow%3Dclassic%3Bhtml%3D1%3Brounded%3D0%3BexitX%3D1%3BexitY%3D0.5%3BexitDx%3D0%3BexitDy%3D0%3BentryX%3D0%3BentryY%3D0.5%3BentryDx%3D0%3BentryDy%3D0%3B%22%20target%3D%22mB2G0DbziojQHZZWRsJG-12%22%20value%3D%22%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2250%22%20relative%3D%221%22%20width%3D%2250%22%20as%3D%22geometry%22%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22310%22%20y%3D%22280%22%20as%3D%22sourcePoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22360%22%20y%3D%22230%22%20as%3D%22targetPoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%3C%2FmxGeometry%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22mB2G0DbziojQHZZWRsJG-14%22%20parent%3D%221%22%20style%3D%22text%3Bhtml%3D1%3BwhiteSpace%3Dwrap%3BstrokeColor%3Dnone%3BfillColor%3Dnone%3Balign%3Dcenter%3BverticalAlign%3Dmiddle%3Brounded%3D0%3B%22%20value%3D%22HTTP%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2230%22%20width%3D%2260%22%20x%3D%22290%22%20y%3D%2250%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22mB2G0DbziojQHZZWRsJG-15%22%20parent%3D%221%22%20style%3D%22text%3Bhtml%3D1%3BwhiteSpace%3Dwrap%3BstrokeColor%3Dnone%3BfillColor%3Dnone%3Balign%3Dcenter%3BverticalAlign%3Dmiddle%3Brounded%3D0%3B%22%20value%3D%22Fetch%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2230%22%20width%3D%2260%22%20x%3D%22290%22%20y%3D%2290%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22mB2G0DbziojQHZZWRsJG-16%22%20edge%3D%221%22%20parent%3D%221%22%20source%3D%22mB2G0DbziojQHZZWRsJG-12%22%20style%3D%22endArrow%3Dnone%3Bhtml%3D1%3Brounded%3D0%3BexitX%3D0.5%3BexitY%3D1%3BexitDx%3D0%3BexitDy%3D0%3B%22%20value%3D%22%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2250%22%20relative%3D%221%22%20width%3D%2250%22%20as%3D%22geometry%22%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22310%22%20y%3D%22280%22%20as%3D%22sourcePoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22420%22%20y%3D%22160%22%20as%3D%22targetPoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%3C%2FmxGeometry%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22mB2G0DbziojQHZZWRsJG-17%22%20edge%3D%221%22%20parent%3D%221%22%20style%3D%22endArrow%3Dnone%3Bhtml%3D1%3Brounded%3D0%3B%22%20value%3D%22%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2250%22%20relative%3D%221%22%20width%3D%2250%22%20as%3D%22geometry%22%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22220%22%20y%3D%22160%22%20as%3D%22sourcePoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22420%22%20y%3D%22160%22%20as%3D%22targetPoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%3C%2FmxGeometry%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22mB2G0DbziojQHZZWRsJG-18%22%20edge%3D%221%22%20parent%3D%221%22%20style%3D%22endArrow%3Dclassic%3Bhtml%3D1%3Brounded%3D0%3BentryX%3D0.5%3BentryY%3D1%3BentryDx%3D0%3BentryDy%3D0%3B%22%20target%3D%22mB2G0DbziojQHZZWRsJG-6%22%20value%3D%22%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2250%22%20relative%3D%221%22%20width%3D%2250%22%20as%3D%22geometry%22%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22220%22%20y%3D%22160%22%20as%3D%22sourcePoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%20%20%3CmxPoint%20x%3D%22360%22%20y%3D%22230%22%20as%3D%22targetPoint%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%20%20%3C%2FmxGeometry%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%20%20%3CmxCell%20id%3D%22mB2G0DbziojQHZZWRsJG-19%22%20parent%3D%221%22%20style%3D%22text%3Bhtml%3D1%3BwhiteSpace%3Dwrap%3BstrokeColor%3Dnone%3BfillColor%3Dnone%3Balign%3Dcenter%3BverticalAlign%3Dmiddle%3Brounded%3D0%3B%22%20value%3D%22JSON%20Data%22%20vertex%3D%221%22%3E%0A%20%20%20%20%20%20%20%20%20%20%3CmxGeometry%20height%3D%2230%22%20width%3D%2280%22%20x%3D%22280%22%20y%3D%22170%22%20as%3D%22geometry%22%20%2F%3E%0A%20%20%20%20%20%20%20%20%3C%2FmxCell%3E%0A%20%20%20%20%20%20%3C%2Froot%3E%0A%20%20%20%20%3C%2FmxGraphModel%3E%0A%20%20%3C%2Fdiagram%3E%0A%3C%2Fmxfile%3E%0A¥>—G   IDATxìØÅÙ†gq~Üƒ{[¤Š%HIp'P h!BĞR\)Z$ŠSJÑbÁİ ¸K‘¢AwäîMæË~'çœÏöøs®yÏÌÎÌÎÎŞ»³ïèîD!„1–3B›¾¯š¿l\rov€ËG“—”k3fŒ¥›ºP˜Z.ªï«æ-W-w3Wà„]>š»|¤Êµ÷Mk%é³500+×;MÀLÀL V®yPtyp&`&Ğ4¬\›æRúDLÀLÀê…€•k½\	çÃò à4LÀê‚€•k]\gÂLÀL ™X¹6ÓÕô¹˜€	äAÀi˜@	X¹ö¡000ö¬\Ûóğ–	˜€	˜@Z<+×¿|ú&`&`ù°rÍŸ©S40hq9)×§èÓ700+×;MÀLÀL V®yPÌ)'c&`&Ğ¬\›ã:ú,LÀLÀêˆ€•k]g%NÃLÀjOÀÊµö×À900h2V®MvA}:&§a&Ğ3V®=ã×Ó½ïV[K²¦·6>”`nÑß˜2¤„?ñ7RØjÜQ>Öö’%6&Ğ\>á*9E	X¹ÅR7ë('É8y]v_IÜ><ã¾@î$1ì:¹1/è/ú-'÷w’s%6&Ğê¼|4bŸCw	X¹v—\ãí÷Š²|Œ¤¿dr‰	˜Àx.ãYØ•+× 6Pt“İIø³˜€	´#àòÑG}l4j.¬\kå.V(ÔQÔv%ÌüJô 	ãX_É¶1F àòÑWÉyœ€€•ëHªî±ÇE±—Òv^f%”UÚSi{ÄÆ…€ËG£\)ç³úR®í²æd'4M¯ô6•¼*±1ÁåÃwAÅX¹V­60hUV®Íwå[æŒV]uÕ$Éò¿ÿı/7\À*§Ü’§zj<xpÑÇŒÖ_ıpÇw„áÃ‡‡VXa‚x;î¸c8öØcSÿ¦î~ø!ôïß?Üÿı©¿ÿL ¸ë®»Ú•%–X"½ÿ¾úªûÓ.f™e–ğöÛoÇCäj—+ˆû|ùå—ÇÙ&ÜÿI2ş90å”S¦åáî»™^26Ú‚.şıïİ¨Ò¿•k•@—8Ìªò¿D’5OicI¡Y@IŠ™íåy¼$kîÒÆ¢’¦6_|q@)e¥W¯^¹óÁœ[Z%tşùç‡9æ˜#¬±ÆEm>É$“„sÏ=7 lyĞ´lì—®ß"‹,’–‘Ÿ~ú)­´=ÿüóá¯ık)W7‰^x!Ì8ãŒa¡…
+=4á£ğ­·ŞJÏówŞ	k®¹fØtÓMÃÇóîœP“Ÿ•kM°û •&ÀÃc—]v	}úô	Àû5B:thXn¹åBß¾}ÃvÛm>øàƒ4³Í6[6lXXwİuÃ/~ñ‹püñÇ‡ ßÿş÷V0ÊûŞ{ï…õÖ[/¬¼òÊ©<ùäØ‰İÏ<óL 6½ç{†ÕW_==æ­·ŞªBøñÇùèİ»wXguÂ‹/¾˜úû#{ì±G± ıxàĞ*¹êª«:Œë­I I’°ğÂ‡UVY%¼ûî»mşò—¿¤÷óRK-vŞyçğı÷ß§a#GL+z(´„×_ç=6iPÛßŸÿüç°É&›w¥ËÇE]6Ûl³Ti^rIa›¤-K©>ğÀÃä“O^T	YY×D•MŞ©›@mL<ñÄáöÛo§œrJàáqıõ×‡+®¸"üë_ÿ
+<ğ@=zt8âˆ#ÒÌM4ÑDáË/¿7ß|s¸óÎ;ÃA¾ùæ›t¿)¦˜"í¦sÎ9ÃoûÛ°öÚk‡ûî»/~øái!ç¡Âş(Ø6Ú(İyÜqÇ¥iÓ­ŒB}ì±ÇÂ?ÿùÏ’]SÏ=÷\øî»ïÂ/ùËt¿îüQ9¸ñÆ»³«÷iŸşy¸ç{R¥É)SA¤×ãºë®KËÅSO=®¾új‚ÂV[mH©¾öÚkaÑEûí·_êÿ(/Üo(=Ê@%ËåŒòK~:áØ”á˜—b6Êµ˜µü&ªÖ|¨m¶Ù¦İ˜ÒôÓOßv˜%—\2mQâÁÃcË-·SM5UŸ–ë£>JP*XsÍ5W˜yæ™Ãûï¿Ïf›ĞåôôÓO§­P<i¡Î0Ã!¦Aº«­ÆëœCª cË eş›ßü&ĞuKŞ6Ø`vŸ@P¾K/½ôş]ñ`ÒéÊ>ëäë€ İ©I2vLrºé¦³Î:kXk­µÒœÑZ}å•WÒÖc•ÜCo¼ñFà~é¥—Ân»í¸o9æ˜{E’$	(\*¡TZ¹÷‰_ÉòAEyÅWTv'tÒ´‡è†nHÏ¡ğï“O>	'xb "ÑG=W…áÕÚ¶r­i§"
+Ç\?ıôÓ¶ãL;í´mnº€yHD™fš)|ôÑGq3L3Í4mnjá…c—([
++;IÆ>¨üñ¶®²ì±²û3æ“ã¸mÊ8F•>à¢W’$¡0„áG«w¡0Ñ„®¹Bo·68æÊ¼„'x"L6ÙdŠ&T˜Ø„{î¹ÓJç™gˆÇıNw0q
+…p†@h9¢¬	'~%ËåüÂ/Ló˜$I8çœsBa×p<‡^½z…›nº)­”:ò\i±r­4a§_¨­öÙgmyA±RÛ<:p°?Âƒ%+[l±EÙ=)Üt9ÇH7ºËÙ´iQÄñ¯—îãyç7nÚn9#-Õ“N:)íúå¾d~óŞ|óÍT©¢h9óhâF¾şúëğàƒâL…9¿şõ¯CœğGÙ@²ewåƒ
+3s6!M„J&³	K3¤?ZÏ„oÄˆÕò®™©ºrıÕ¯~•Ö*²gL7µ©¬Ÿİ&'7Ü0­é2–JüÇ?şÑ6îTê8ŒÙPˆyøÌ3Ï<ÉN—^ziH/õ(ñ·ì²Ë¦2ÒàA@ºXT”iöaÆ2p'œpB[ô.¸ íc‚U›gÆñá‡†ÙgŸ=ãc§	LHà¶ÛnL~›zê©]Æt'I’Nrºå–[Ò±ZL’»æškÒN>ùä@×0I’„X “på•W¦KÀ*Y>ke®CVGĞ{ÃäBZ´ä©¥êÊµ!8Oİ"°öß—ªz6L6b¦a¿~ıÒ©üÔrÿğ‡?”Í2]ÅŒM±<†‰—]vY@¹R#f†$EÆ©Ê%Â˜0]Ò(fÆuYÀäŒÂ}H‹næèÏ-ãÄt+/¾øâii90öDk8ÆËÚì¿Ì2Ëd½ì®º)(Ğ$;”ÑK]¦LÚãŞÍî»ï>úè´¢¹Ï>û„#8"œ}öÙõ±ÜïgœqF:ëöïÿ{º¦š}¨œ"t	Ó=Ë0º—‰_‰ò-6W2ÍñÈS'¤êQêN¹ÒØwß}Óe 2dHºœ2<\Ô^i¥•Òéß±‹.
+–;0x—]ßRQG*õQìš(Y‰o½õÖÊÂ„f×]w´N³!ÜW?üpxõÕWÓY»QI1NI-=ÆÍn3aƒñ$ºÓh2;’ã¢äbÊ	qÿì6Ç`&ñË/¿œóĞCMÇ‹bÜhÓ’ 6ÎÄè÷³Ÿı,Ğ…GW0]ÄguVÈ*OÖÅ2©$Æg%
+<nÛ®)ÊEMËgÏ$;a––¡¬æ›o>‚]»o¼ñF:#ÙìÛn»màşg?†x¡	İ¬ÜÜ×ìD	ÿp3Cı¿ÿıo:Q°RåãŞ{ïMgês¼¬ \™ùOE”ó‹yÊÆ‰nÊ<z#nWÃ®;åJ·ıÿtO0p<©ıÓµ‡"¥¯©áÔ´€ÄC‰‡]\vŸ¥âÑ~PCgÁ(“š(Yå¡)Ì^{íN;í´nÊ›Ùš´Œ»•€wÊ›€ËGŞD,½ºS®t5Ğwíµ×¦-ÖC9$}Ê“–)İg0şãÿ˜eQca;»ì‚mKÅ	Ó¾‘L)™Bb%+=1;í´SÚª¦µĞ•tf_fSRíÊ¾[1.CÛ	W]¹&É„Kx8°ÄdLÖ öN×ÅüóÏŸ|ñÅéÛtè’K’±cL ÁŸnöË.w`»Ê2FÇkE™Içı“•ìşÚ8GbÓEI’&›Pº²+
+uÄˆé›§º²_q[ñïÊ9»|äp“5jUW®(E'g1¦Ä‹•£“HX°L–‡Ê–5|›o¾y:]œÖjúùã~5´»É$tæ|X(ï!Z±ßŠï8$Û¦ù	tæiå8.Í_Ja|0–Œw ¯Ô:ï¼óïj%mfC²Öjã7f3}¡ôQG•ºYpÏhZ¥LÅfì5Nø`’ÈŸşô§4ÿjB`/•ÖjTª'i{VÉa’/$6&ĞÊ\>ZùêëÜ«®\yíÜşûïhò>J–HÄY¿ûİïÒÙjÌí×¯_`¢ë	‰Ë´kÆ–˜¡Æ2
+¾| s°©ctØI$UWª,H’$$ÉXaHò¾±EyËÅ°t¦\ÚTùTVö`,×avoÖ÷ßşö·Š/n'/Ìçx–š¨YùèèŒ™ıËÒ0zÿ:Š[,œ7e?9ÇªŞI\,n)?ÖlÇ°Âô¢´I{±Å‹›cW]¹BeÉ¬`¦t3yƒÉI¼3’0&4~úéé‚º„™5ÃXXÏ7+YrÀ;[ãÔêbË.HËRQ´PgÖ°«ŞR¥Gƒ‡Âò-Öæñ…{î¹GYÊ×0—5|¥RåfIC6œõ­T³~¸ñ#·¥©	P.jV>Ê‘eI#ˆH’¤\´’a¼%.{AQS>˜PZr‡"ñÍNeÓc»Y¤&ÊµYàµøyĞb­ºR-Æœ	=¬Ce4ëŞˆÃZ=ŞàRøy8ÂXâÅ‹÷y{ÃÙ5ª¼ğ›/àğğaÙobÚa‡Â#<’~%„ı³ÂÃ…9…zd˜3ıLn^ôOX©üñ bV<E
+›Eÿœ/³ "É@òÀC’s¦’ÉK-âºoÂšKòlê¦|Òã«N”üK•ŞÈÄ}JùèÛ·o ·0–“lK“{Ï-&I’¾í‰¥`l÷ïß?ı*Ç(¼§i\1•‰{fÓ+u¯“Nz„XïMùeí:=K„Ñ(£Ì#ôÜ°|ÿZ‰•k­Èû¸¹@Á1‚‰R$aŒÓó É~îÛo¿(¨c=6U˜(R^ÔÀ>ô’İÎ—_~yúF†%xñİÎ´:‰—zWø>f’´o….à   IDATğ¥¾†“íş¢k?ÂJå5Û,xçx¤ÍbàÀéË$˜gÀ‡ş¥Ö}góg·	 §…!µreOpÿ±jJK•¡bi¡$ñ?ì°Ã•=æÆğ]Øì{²÷4Ÿ€¤7’|PşØá.v¯…Ùô(~Ê:i*°¼,†^PŞ4Å›§è¥2?÷­¶måZmâ>^.²¯t£ ¢ ûäE¼ÚÚ2µWF+5~¸„SëM’$}ğ†â±¶š¯…0ÅKJøl-FÂJ	ë¯I¿X8o»aíiãA…Ç/•?âÒ2eN8Ò§%À.3íy9óğ§…[jİ7éXL K 7]°¼qŒ{¼\Y .ÃpTqS¤r‡;+(H5~TLâÃM¯ouÂdïi¶‹	÷t±{=…IO­]æZğúFÊ-½W|ä‚×1ÒÛÄ8ğàÁƒ³»VİmåZuä>`²c®ÔV)XH“æáQîóWÔ|yİ`’$iWoìV¢æL¡Méä-cZ®Å¢£&µZØøu”?*1½RyÂ¿Üºï¸¿mÈ`NBìÆ¿TY ŒÕØsa²–ÀEÍ—¦â«éñ!mŞ·M‹”UÉŞÓlîéÊqxÅm’$é„F†Cn!}ÊÙ³Ï>¨ÓõL%¶ØqªågåZ-Ò>NÅĞ=J6Œ—â„ôcĞ¥>Å€$ãP|Ù‰JìÃÃ"f”e_ŒÆíB»ğáR$I`ö;5zw’$eóW˜FahMÓjgö|¯û.<o×	ŞÓ‹$;åÊáÙ²€›{ÿ(YEMY`¢³á™`X®ÜÄımÒç8Ñ?Şëq›û¹”İ((TÂ¨pó=Zº y§7]Óøç+OÍÊµó¬³	yä‘é'°X7]îóW(L
+!_¼¡µ‹¢ÅæÔPÒ|ŞŠ±¨Q£FÆlGè>‹qˆ…ñŸ8Şı
+íí·ß>ĞÂ¤Ë7áåòGxVèr£ÕK×5]ktu1	…¼1¶ÅùŸ.;¯û†„¥Æ*û÷ïŸFáŞ)Uˆ@”V!næ ôéÓg›Ğ%ïÿXN^xá4%;zôèÀ=›zdş²ŸrÌx‡R÷z6Ë6)³ôLáÑE…áÃ‡ÊCBøÑ]ÌœŞÀv­ÄÊµVä}Ü\	0‘‚±Ï!C†¤éÒ"eİ°t16Iw…ó‰'|õƒÉE(+¶‡˜eÈXo£†Ì8
+*3‚énJ÷—}¸ŒóšÀâ|]„ôpÇ¥òÃ£Mm¯ß0k“‡Ÿöâk<¤Çùyİw$e»#TĞPlTîˆ[®,Nyàı”>¦²÷Ş{ãİ&Üÿ(D<˜HÈwa)+Tü(Cl3‡ğ¬P±å-|Ì~gBR+u¯Çpl”9•TÊ/ÊEË°Çeœ—Ş!òÄ„Åø,`¿Zˆ•kiê©S,jİ…Ù£ë•/#áÏk1i1~®W¯^á?ÿùO KŒ Æ’âƒƒñ–ĞåtÂ	'Tú²L…Ç¤vÎg¯ÒHeşÈ’R*|Ö‹ÁÙ¸<Px‘'ò'™0á„ÖEáºï=÷Ü3Ğ=–MÃn`è„%e‘DGe™ëTzè¡ÀD:*‰ìK0³‡©p2Ö‰“ï(=öX¥ŠûÊ+¯Åîéì§cz¤Sì^ïİ»wZf	GXÒFù¦÷ˆ‰~I’^NÄBz‰¨0ÿüç?'zÍÄÊµfè}`00f%`åÚ¬W¶^ÎËù00$`åÚ‚İ§l&`å0´À›ÊÅqXyV®åù8Ôê€ó`&Ğ`¬\ì‚9»&`&`õOÀÊµş¯‘sh&§aU$`åZEØ>”	˜€	˜@k°r­ıuŞEYxJò¹äaÉPÉÔÌú;S‚ùTsIJ™Ş
+x^bcÍB`È˜"òŒü:2ÛuAáïI’Øt€cv’€•k'AU(ÚJ÷€q2§ìÃ%ËK.“šéåñ¶ÄÆZÀÜ:á$#KÈİ‘9¦£7J°r­$İòiÓ:=DQ6—Ü&ùBr«dÉjí²ÚL¶åºº|Ÿ”¼+9CR—ëz‡ü÷•L)9Qr‹ä	
+|bÙ6&Ğèf×	Ü$¹oœ,%sşzI(TZççşXöµ’ù%ÑP–^ÒÆ;’ı%6&Â%r@E	ğ  +ø‘‚£àw–ü~3³Êó|É>jğÈŞM’5Çiãu	Ju=ÙóHPÚÈ&]ZÇrÚ˜@C¸\¹§Bº²l^*}•liô}+÷”æ¥²Qª”†NÆ¾×R2«HV“P&•MeT–	ôŒ 7bÏRğŞİ%€ÂcÌ§«û¯©›½[ö(ÉÚ’S$qljc¹“0–++|¦?ù Ù´X–ı€ÄÆ…À[Êh¼¿±¯Ñ6]ÅKÊsî”ûÉ²’¬!/™=]ôş,{SI4'ËÁpByšMÛ6&ĞcV®=FØQ%Ãé¢¢Z2B‰ öá!QÌ˜aÃÀCâGÙºÆv—c	­Yº¢§‘ÛÆ… 
+’û;
+H”à´:Ñ.²´ÜÙ._mâQÖp“2?É]8Ä"/è:+×®3ËkZŸÌT\¡ ÁµMKôÿd3Ès:I4sÈ±ˆƒB]Njô´TåLcºÔÖiÁö“ÊV–	4,Ên´'¾¯3œAåªoÜ°m•"`åZ)²§KmúEcœˆ±PZ“Œı\'?”î×²‹™ÛåÉÃa>ÙÔ²ŸejîÔÂyàRİe(jf$ªmá/ÈÁ¸®¬Æ1Î©	xSÛ/J¶’`˜ ÈD&ÆL¿“eƒaº”_Ñ6­]Ya¯]Ã²lL r¬\+Ç¶3)Ó‚<[Q²(<&g¼¬mfË*jPÂ¸]bSÉÍxR¬¹k30IêB9P¼ØÌª¼DÛ#$KxÉ²1†&°…rreşÁÕr?!ùFÂÌ{zk˜MOoñv•?JwÙIlL ¢¬\+Š·ÃÄ™ÑÈ,GZ˜(ÇIµ…ÿ+Ù˜Sõ'&e×¹2ÊCƒ}híŸQ,ªøÑ0c%Í„&fo­ º„™5ÌqµiÓZîl™ÙÎ=Îd£b™gBàú
+XUÂD?*™r¦fCı3ŞÊ’µ‘r3sxrÙô
+='C¥“V-n¤p?‹	t‹€•k·°y'00(MÀÊµ4‡˜€	˜Àìa!`åÚJc&`&`] `åÚXj&`&æOÃÊµù¯±ÏĞLÀL Ê¬\«Ü‡30h~ÕP®ÍOÑgh&`&`V®vš€	˜€	˜@¬\ó X4|00†!`åÚ0—Ê50h©rM’$$‰%IºÎ Q.t-ò™$]ç™$İÇ÷yN|kq?5Û1“Ä÷z’4'îU”k"‡%„0şM@ '<m_¾+:\°-ï=É¯NÙ¦›zÂ½÷S#æ»ÛyF¹rÒ0î8P»ò¢xl9›ÜøôLÀ:$`åÚ!"G0²¦Qè>¾h„Í¶6mLÀZ™€•k+_}Ÿ{h­ÒuDZØlã¶˜@9krV®M~}z%@+•Öêdã‚Í6şã¼l™€	´"+×V¼ê>ç¼¤„h­Ê
+_ò'a9mLÀ*J ·r­ã‹ã¬Õ5Z§û*‡_IŞ—L-ù@Â6ş„kÓÆL 	X¹¶âU÷9çA`-"é%ÁÌ¦?¶ñ'\›6&`­H ”k+^Ÿs8Iy›JrŠ$kØÆŸğ¬¿İ&`-DÀÊµ….¶OÕLÀL :¬\«Ã¹nâŒ˜€	˜€	T€•kåû&`&`-FÀÊµÅ.¸O7NÃLÀÊ°r-ÏÇ¡&`&`&ĞeV®]FæLÀò à4L ™	X¹6óÕõ¹™€	˜€	Ô„€•kM°û &`&§Q¯¬\ëõÊ8_&`&`KÀÊµa/3n&`&J¤aåZ	ªNÓLÀL ¥	X¹¶ôå÷É›€	˜€	T‚@ë)×JPtš&`&`&!`åša§	˜€	˜€	äAÀÊ5Š­—†ÏØLÀL +×2pd&`&`İ!`åÚjŞÇò à4LÀš–€•kÓ^ZŸ˜	˜€	˜@­X¹ÖŠ¼k&§auIÀÊµ./‹3e&`&ĞÈ¬\ùê9ï&`&§‘;+×Ü‘:A00V'`åÚêw€ÏßLÀL íÒ°rm‡Ã&`&`&ĞsV®=gèLÀLÀL +×v8:¿á˜&`&`&PŠ€•k)2ö700n°rí&8ï–§a&`ÍIÀÊµ9¯«ÏÊLÀL †¬\kß‡6<80ú#`åZ×Ä9jL#”í1–`ÁŠ”Ê‡¼[ÇX¹¶Îµö™V–@%ŸXBƒ2p¾+|ïR>tˆÖ1V®­s­}¦&`&`U"`åZ%Ğ>Œ	˜€	4;ŸßxV®ãYØe&`&`¹°rÍ£100ñº¯\Ç§a—	˜€	˜€	˜@†€•k†&`&`&+×<(v?ïi&`&Ğ„¬\›ğ¢ú”LÀLÀjKÀÊµ¶ü}ô<80¨3V®uvAœ00Æ'`åÚø×Ğg`yp&`9°rÍ¦“200X¹BÁb&`yp&0€•ë8¶LÀLÀL /V®y‘t:&`&`yhŠ4¬\›â2ú$LÀLÀê‰€•k=]çÅLÀL )Ô\¹6EŸ„	˜€	˜€	dX¹f`Øi&P1Ï(å1’ç%Ñ”ãvÉ(É“’3$J¢™\“%/J>—Ü-9@’H0“è4‡ÊÎš´q¥¤ĞÄøìƒ¼®×Hæ“tÆ¬¦HsIlL CV®"j„Î£	Ô=%”Ãş’h’Åyœìù%K0—ò7N†Ë^\²¥¤—ä(É’³$Ñ|*Ç†’E$5s+"Ï¾5e ´ç‘İ‘ÙE¬\Á¦cÜ`Çr0È—ÀJ–#Ší¹ßì'ÙL‚Y](ÖdÓªıZ6q×’½­d	­OZ£GÈ}¢¤+†}_Ö§HØwˆìhhß§{¶ìÉ$»JÖP!XW6¦X<ü-&¬\}˜À8¶ªJàmbÉ0I?	­É¯d¿†YÚ  RIDAT)Á¬ª¿k%ßH²æ5m< é#Á ø.–c&Éz’î”öÚãv\JöNº–Wİ[²‰„.ëWeï%¹YR*‚lL X¹ú&0¨	ºsWÑ‘g–)A©Ş${E	eû>"òü¦•dJïxyL*éª!=ºI“Ö*]Ö+ûã²‹Év6v·iEn¹¶âU÷9›@Åt)a]¼+k¯©%/I®“L!ùD2‹¤˜A~¨€dœÈ
+éE¸›ì®š9´İÎtOO%÷é’·$t3ÎÊq´ÙÎt6^»¼Ñ:¬\[çZûLM ÚPJÛë ("Y¥ù%	c¦±kW›.á½qHæ•<(¡;öÿdga+Éã~I¡9XŒÛN'»+†IR×k”éş²é®f‚ùGÑÊkÓÙxìhÖ `åÚ×Ùgiµ €² 3áeÅXæSÚÆĞ}{K0<‹¶’ƒÖì+²Y"3Z6]ÅŒ{¢ éF¾E~,ßÉ.é‘WjŞÖ?iî#»3†	SG+"Ê5NhbÖ1-`òN‹v…³$HVøVŒñÊ
+åâŞ#ñÎO€ºñÏÂg`&P¯P¬‹*sOK¾—Ğº”h™&³uQ¨t	3±‰å1?ÊE†2)÷£Z¼7Êf’ÓÖ²K™À8®¬’&vù>«L‚b2kiµÈÓ!rÜ!9IBşw–ÍWO·5•„rñİ¦Õ	X¹¶úàó7Ê ¥Š›A‡a½*/Œ35´2YÖ2£¶hÁ’Í’Y©yWÿt+ÓÊ¥‹vm£œQ´r†ô[’r¦†±Ó9åŠKzäl3Ä'¬Ğ*FÑÇH÷ÊÁ&–İß‹´=»ä.É1Îã\Ùåâ)Ø¦öj›+×Úò÷ÑMÀLÀš€•k^TŸ’	˜€	˜@m	4‹r­-EİLÀLÀ2¬\30ì400<X¹æA±YÒğy˜€	˜€	äBÀÊ5ŒNÄLÀLÀÆ°rÏÂ.Èƒ€Ó00¿¸ß÷€	˜€	˜€	äMÀ-×¼‰:=0p
+&Ğà¬\ü:û&`&`õGÀÊµş®‰sd&`yp5$ğÿ   ÿÿUÿâ¸   IDAT P÷ôB%æœ    IEND®B`‚===== ./project_structure.txt =====
+.
+â”œâ”€â”€ all_files_combined.txt
+â”œâ”€â”€ backend
+â”‚Â Â  â”œâ”€â”€ package.json
+â”‚Â Â  â”œâ”€â”€ package-lock.json
+â”‚Â Â  â”œâ”€â”€ scripts
+â”‚Â Â  â”‚Â Â  â”œâ”€â”€ scrapeAndStore.js
+â”‚Â Â  â”‚Â Â  â””â”€â”€ updateArticles.js
+â”‚Â Â  â””â”€â”€ src
+â”‚Â Â      â”œâ”€â”€ controllers
+â”‚Â Â      â”‚Â Â  â””â”€â”€ article.controller.js
+â”‚Â Â      â”œâ”€â”€ db
+â”‚Â Â      â”‚Â Â  â”œâ”€â”€ index.js
+â”‚Â Â      â”‚Â Â  â”œâ”€â”€ schema.sql
+â”‚Â Â      â”‚Â Â  â””â”€â”€ testConnection.js
+â”‚Â Â      â”œâ”€â”€ index.js
+â”‚Â Â      â”œâ”€â”€ routes
+â”‚Â Â      â”‚Â Â  â””â”€â”€ article.routes.js
+â”‚Â Â      â”œâ”€â”€ scrapers
+â”‚Â Â      â”‚Â Â  â””â”€â”€ beyondchats.scraper.js
+â”‚Â Â      â””â”€â”€ services
+â”‚Â Â          â”œâ”€â”€ article.service.js
+â”‚Â Â          â”œâ”€â”€ groq.service.js
+â”‚Â Â          â”œâ”€â”€ llm.service.js
+â”‚Â Â          â”œâ”€â”€ scrape.service.js
+â”‚Â Â          â””â”€â”€ search.service.js
+â”œâ”€â”€ backup_articles.sql
+â”œâ”€â”€ bdfd.png
+â”œâ”€â”€ fdfd.png
+â”œâ”€â”€ frontend
+â”‚Â Â  â”œâ”€â”€ eslint.config.js
+â”‚Â Â  â”œâ”€â”€ index.html
+â”‚Â Â  â”œâ”€â”€ package.json
+â”‚Â Â  â”œâ”€â”€ package-lock.json
+â”‚Â Â  â”œâ”€â”€ public
+â”‚Â Â  â”‚Â Â  â””â”€â”€ vite.svg
+â”‚Â Â  â”œâ”€â”€ README.md
+â”‚Â Â  â”œâ”€â”€ src
+â”‚Â Â  â”‚Â Â  â”œâ”€â”€ App.css
+â”‚Â Â  â”‚Â Â  â”œâ”€â”€ App.jsx
+â”‚Â Â  â”‚Â Â  â”œâ”€â”€ assets
+â”‚Â Â  â”‚Â Â  â”‚Â Â  â””â”€â”€ react.svg
+â”‚Â Â  â”‚Â Â  â”œâ”€â”€ components
+â”‚Â Â  â”‚Â Â  â”‚Â Â  â”œâ”€â”€ ArticleCard.jsx
+â”‚Â Â  â”‚Â Â  â”‚Â Â  â”œâ”€â”€ ArticleList.jsx
+â”‚Â Â  â”‚Â Â  â”‚Â Â  â””â”€â”€ ArticlePair.jsx
+â”‚Â Â  â”‚Â Â  â”œâ”€â”€ index.css
+â”‚Â Â  â”‚Â Â  â””â”€â”€ main.jsx
+â”‚Â Â  â””â”€â”€ vite.config.js
+â”œâ”€â”€ project_structure.txt
+â””â”€â”€ README.md
+
+14 directories, 37 files

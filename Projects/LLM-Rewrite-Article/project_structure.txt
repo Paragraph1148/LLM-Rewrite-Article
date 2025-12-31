@@ -1,0 +1,53 @@
+.
+├── all_files_combined.txt
+├── backend
+│   ├── package.json
+│   ├── package-lock.json
+│   ├── scripts
+│   │   ├── scrapeAndStore.js
+│   │   └── updateArticles.js
+│   └── src
+│       ├── controllers
+│       │   └── article.controller.js
+│       ├── db
+│       │   ├── index.js
+│       │   ├── schema.sql
+│       │   └── testConnection.js
+│       ├── index.js
+│       ├── routes
+│       │   └── article.routes.js
+│       ├── scrapers
+│       │   └── beyondchats.scraper.js
+│       └── services
+│           ├── article.service.js
+│           ├── groq.service.js
+│           ├── llm.service.js
+│           ├── scrape.service.js
+│           └── search.service.js
+├── backup_articles.sql
+├── bdfd.png
+├── fdfd.png
+├── frontend
+│   ├── eslint.config.js
+│   ├── index.html
+│   ├── package.json
+│   ├── package-lock.json
+│   ├── public
+│   │   └── vite.svg
+│   ├── README.md
+│   ├── src
+│   │   ├── App.css
+│   │   ├── App.jsx
+│   │   ├── assets
+│   │   │   └── react.svg
+│   │   ├── components
+│   │   │   ├── ArticleCard.jsx
+│   │   │   ├── ArticleList.jsx
+│   │   │   └── ArticlePair.jsx
+│   │   ├── index.css
+│   │   └── main.jsx
+│   └── vite.config.js
+├── project_structure.txt
+└── README.md
+
+14 directories, 37 files
