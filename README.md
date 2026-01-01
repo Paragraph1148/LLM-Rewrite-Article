@@ -193,16 +193,23 @@ The goal of this phase is correctness and explainability, not maximum throughput
 
 ### Data Flow Diagram
 
-The diagram below shows the high-level data flow across all three phases.
+The backend diagram below shows the high-level data flow across all three phases.
 It highlights how articles are scraped, stored, updated using an LLM,
 and finally displayed on the frontend.
 
 The focus of the diagram is clarity of data movement rather than
 low-level implementation details.
 
-![Data Flow Diagram](./dfd.png)
+![Backend Data Flow Diagram](./bdfd.png)
 
----
+The frontend acts as a presentation layer that fetches article data from the backend API.
+Upon page load, the React application sends a GET request to /api/articles.
+The backend responds with both original and updated articles.
+
+The frontend groups articles by title and displays the original and rewritten versions side by side, along with reference links.
+No data mutation occurs on the frontend.
+
+![Frontend Data Flow Diagram](./fdfd.png)
 
 ### Phase 3: Frontend
 

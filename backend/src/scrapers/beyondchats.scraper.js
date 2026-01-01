@@ -44,6 +44,31 @@ function detectLastPageNumber($) {
   return maxPage;
 }
 
+function extractArticleContent($) {
+  const selectors = [
+    ".entry-content",
+    ".post-content",
+    ".blog-content",
+    "article",
+  ];
+
+  for (const selector of selectors) {
+    const el = $(selector).first();
+
+    if (el.length) {
+      const text = el.text().trim();
+
+      // sanity check to avoid headers / empty blocks
+      if (text.length > 500) {
+        return text;
+      }
+    }
+  }
+
+  // fallback (should rarely happen)
+  return $("body").text().trim();
+}
+
 export async function scrapeOldestArticles() {
   // 1. Load main blogs page
   const mainRes = await axios.get(BLOGS_URL);
@@ -61,11 +86,7 @@ export async function scrapeOldestArticles() {
   const lastPageRes = await axios.get(lastPageUrl);
   const $last = cheerio.load(lastPageRes.data);
 
-  // --- FIX STARTS HERE ---
-  // We reverse the links to get Bottom (Oldest) -> Top (Newer)
-  // Original code: const lastPageLinks = extractArticleLinks($last);
   const lastPageLinks = extractArticleLinks($last).reverse();
-  // --- FIX ENDS HERE ---
 
   collectedLinks.push(...lastPageLinks);
 
@@ -74,8 +95,6 @@ export async function scrapeOldestArticles() {
     const prevPageUrl = `${BLOGS_URL}page/${lastPageNumber - 1}/`;
     const prevRes = await axios.get(prevPageUrl);
     const $prev = cheerio.load(prevRes.data);
-
-    // This was already correct (taking from bottom of prev page)
     const prevLinks = extractArticleLinks($prev).reverse();
     collectedLinks.push(...prevLinks);
   }
@@ -92,7 +111,7 @@ export async function scrapeOldestArticles() {
       const $ = cheerio.load(res.data);
 
       const title = $("h1").first().text().trim();
-      const content = $("article").text().trim();
+      const content = extractArticleContent($);
 
       if (!title || !content) {
         continue;
