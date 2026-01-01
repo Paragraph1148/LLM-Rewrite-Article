@@ -24,7 +24,12 @@ function App() {
   }, []);
 
   if (loading) {
-    return <p style={{ padding: 20 }}>Loading articles...</p>;
+    return (
+      <p style={{ padding: 20 }}>
+        Loading articles... (The server is waking up, this may take about 15
+        seconds)
+      </p>
+    );
   }
 
   // group by title
