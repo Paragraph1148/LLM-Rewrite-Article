@@ -11,6 +11,7 @@ The work is divided into three phases as mentioned in the assignment.
 ## Live Demo
 
 Frontend: https://llm-rewrite-article.vercel.app/
+Backend: https://llm-rewrite-article.onrender.com/api/articles
 
 The live frontend displays original and LLM-updated articles side by side
 for direct comparison.
@@ -41,6 +42,14 @@ The frontend is a small React app used to display articles.
 - Stores article data in a MySQL database.
 - Exposes CRUD APIs to manage articles.
 
+- Scraper → Stores articles in DB
+- APIs:
+  GET /articles
+  GET /articles/:id
+  POST /articles
+  PUT /articles/:id
+  DELETE /articles/:id
+
 The scraper first identifies the **last page** of the blogs section and starts collecting articles
 from there. If the last page contains fewer than 5 articles, it fetches one additional previous page
 and combines results to complete the required count.
@@ -58,14 +67,6 @@ and easier to debug as a standalone script.
 
 The goal of this phase is to update existing articles by learning from similar
 articles that rank higher on search engines.
-
----
-
-### Phase 3: Frontend
-
-A simple React-based frontend fetches articles from the backend APIs and displays
-both original and updated versions. The UI focuses on readability and responsiveness
-without unnecessary complexity.
 
 ---
 
@@ -220,6 +221,19 @@ low-level implementation details.
    mysql -u root -p beyondchats < backend/db/schema.sql
 
 Database credentials are managed using environment variables.
+
+---
+
+## Local Setup
+
+1. Clone repo
+2. Install dependencies
+   npm install
+3. Create .env file
+4. Run scraper
+5. Start API server
+6. Run rewrite script
+7. Start frontend
 
 ---
 
