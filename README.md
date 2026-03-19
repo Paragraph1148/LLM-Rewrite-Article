@@ -1,10 +1,8 @@
-## BeyondChats Assignment
+## AI-Assisted Article Rewriting Pipeline
 
-This repository contains my submission for the Full Stack Developer Intern assignment at BeyondChats.
-The goal of this project is to scrape blog articles, store them, update them using LLMs, and display
-both original and updated versions through a simple frontend.
+This project is an end-to-end content automation system that scrapes existing blog articles, analyzes higher-ranking reference content, and generates improved versions using LLMs.
 
-The work is divided into three phases as mentioned in the assignment.
+It combines web scraping, search APIs, and controlled AI rewriting into a single pipeline designed to enhance article quality while preserving original intent.
 
 ---
 
@@ -13,181 +11,176 @@ The work is divided into three phases as mentioned in the assignment.
 Frontend: https://llm-rewrite-article.vercel.app/
 Backend: https://llm-rewrite-article.onrender.com/api/articles
 
-The live frontend displays original and LLM-updated articles side by side
-for direct comparison.
+The frontend displays original and rewritten articles side by side for direct comparison, along with reference sources.
 
 ---
 
 ### Tech Stack
 
-- Node.js
-- Express.js
-- MySQL
-- React
+- Backend: Node.js, Express.js
+
+- Frontend: React
+
+- Database: MySQL
+
+- LLM Integration: Groq (LLaMA-based models)
+
+- Other: REST APIs, Web Scraping
 
 ---
 
-### Project Structure
+### Key Features
 
-The backend handles scraping, database operations, and automation logic.
-The frontend is a small React app used to display articles.
+- Automated Article Scraping
+  Extracts older blog articles and stores them in a structured database.
 
----
+- End-to-End Rewrite Pipeline
+  Processes articles through search, scraping, and AI rewriting automatically.
 
-## Phase Breakdown
+- Reference-Based Content Improvement
+  Uses higher-ranking external articles to improve structure, clarity, and depth.
 
-### Phase 1: Scraping & CRUD
+- Controlled LLM Usage
+  Ensures rewritten content preserves intent and avoids copying or hallucination.
 
-- Scrapes the **5 oldest articles** from the BeyondChats blogs section.
-- Stores article data in a MySQL database.
-- Exposes CRUD APIs to manage articles.
+- Side-by-Side Comparison UI
+  Displays original and rewritten articles with reference links for transparency.### Project Structure
 
-- Scraper → Stores articles in DB
-- APIs:
-  GET /articles
-  GET /articles/:id
-  POST /articles
-  PUT /articles/:id
-  DELETE /articles/:id
-
-The scraper first identifies the **last page** of the blogs section and starts collecting articles
-from there. If the last page contains fewer than 5 articles, it fetches one additional previous page
-and combines results to complete the required count.
-
-When combining multiple pages, articles from previous pages are read **bottom-up** to preserve
-chronological order and ensure the oldest articles are selected.
+- The backend handles scraping, database operations, and automation logic.
+  The frontend is a small React app used to display articles.
 
 ---
 
-### Phase 2: Article Updating Pipeline (Design)
+### System Architecture
 
-Phase 2 is implemented as a Node.js script that runs as a background/batch job.
-It is intentionally not exposed as an API endpoint, since the task is automation-oriented
-and easier to debug as a standalone script.
+The system is divided into three main layers:
 
-The goal of this phase is to update existing articles by learning from similar
-articles that rank higher on search engines.
+- Data Collection Layer
+  Scrapes articles and stores them in the database.
 
----
+- Processing Pipeline
+  Enriches articles with external references and rewrites them using an LLM.
 
-#### High-level Flow
-
-1. Fetch original articles from the internal Articles API.
-2. For each article, search Google using the article title.
-3. From the search results, pick the first two links that point to blog/article pages
-   published by other websites.
-4. Scrape the main content from these two external articles.
-5. Send the original article and the reference articles to an LLM with a controlled prompt.
-6. Store the newly generated article using the existing CRUD APIs.
-7. Save reference links separately and display them at the bottom of the updated article.
+- Presentation Layer
+  Displays original and updated content via a React frontend.
 
 ---
 
-#### Google Search Strategy
+### Pipeline Flow
 
-Instead of scraping Google HTML directly (which is brittle and prone to blocking),
-a search API is used to fetch search results in a stable and predictable way.
+1. Input
+   Fetch original articles from the database.
 
-This keeps the focus of the assignment on content processing and automation logic,
-rather than dealing with anti-bot protections.
+2. Search & Enrichment
+   Use a search API to find relevant high-ranking articles based on the title.
 
-Only results that look like blog or article pages are considered.
+3. Content Extraction
+   Scrape and clean content from selected reference articles.
 
-Basic heuristics are applied to filter blog/article-style links from search results.
+4. LLM Transformation
+   Pass original + reference content into an LLM with a structured prompt.
 
-External article content is lightly truncated to keep LLM input manageable.
+5. Output Storage
+   Store rewritten articles along with reference links.
+
+6. Frontend Rendering
+   Display both versions side by side for comparison.
 
 ---
 
-#### LLM Usage
+### LLM Design Approach
 
-The LLM is used as a controlled rewriting step, not as a content generator from scratch.
+The LLM is used as a controlled transformation layer, not a free-form generator.
 
 The prompt is designed to:
 
-- Preserve the original intent of the article.
-- Improve clarity, structure, and depth.
-- Align tone and formatting with the reference articles.
-- Avoid copying or closely paraphrasing reference content.
+- Preserve the original meaning of the article
 
-The LLM is instructed to return clean, structured markdown without inline citations.
-Reference links are added separately at the end of the article.
+- Improve clarity, structure, and readability
 
-The LLM is treated as a rewriting tool with strict constraints, not as a free-form content generator.
+- Incorporate insights from reference articles
 
----
+- Avoid copying or closely paraphrasing external content
 
-### LLM Provider Choice (Phase 2)
-
-Phase 2 requires calling an LLM API to rewrite existing articles based on reference content.
-The pipeline was intentionally designed to be provider-agnostic, with all LLM logic isolated
-inside a single service layer.
-
-#### Initial Approach
-
-The initial implementation used OpenAI-compatible APIs. However, during local development,
-the OpenAI free tier account had `$0` available credits, which resulted in consistent
-`insufficient_quota` errors. Even though the integration and retry logic were correct,
-requests were rejected before execution.
-
-A similar issue was encountered while testing Google Gemini, where valid API keys were loaded
-successfully but requests failed due to account-level API restrictions.
-
-These issues were related to **API access and billing**, not code correctness.
+The output is clean, structured markdown. Reference links are added separately to maintain transparency.
 
 ---
 
-#### Final Decision: Groq
+### LLM Provider Decision
 
-To ensure the Phase 2 pipeline could run end-to-end during local testing, the LLM provider
-was switched to **Groq**, which offers a free and reliable API for OpenAI-compatible models
-(e.g. LLaMA 3.3).
+The pipeline was designed to be provider-agnostic, with LLM logic isolated in a service layer.
 
-Reasons for choosing Groq:
+During development:
 
-- Free-tier availability without billing setup
-- OpenAI-compatible API format (minimal code changes)
-- Fast and stable responses for long-form text rewriting
+- OpenAI APIs failed due to quota limits
 
-The original `llm.service.js` was replaced with `groq.service.js`, while keeping the same
-function signature. This allowed the rest of the pipeline to remain unchanged.
+- Gemini APIs failed due to account restrictions
 
----
+To ensure a working pipeline, the system was switched to Groq, which provided:
 
-#### Current Behavior
+- Free-tier access without billing setup
 
-- The Phase 2 script successfully:
-  - Fetches original articles
-  - Searches and scrapes reference articles
-  - Calls the Groq LLM to rewrite content
-  - Stores updated articles along with reference links
-- All external API calls include defensive checks and graceful failure handling
-- If any step fails for a specific article, the pipeline skips it and continues
+- OpenAI-compatible API format
 
-This approach ensures correctness, transparency, and a working end-to-end flow without
-relying on paid API credits.
+- Fast and stable responses for long-form rewriting
+
+This allowed the pipeline to run end-to-end without changing core logic.
 
 ---
 
-#### Data Storage Approach
+### Data Storage Strategy
 
-Updated articles are stored using the same `articles` table:
+All articles are stored in a single table:
 
-- Original articles have `is_updated = 0`
-- Updated articles have `is_updated = 1`
-- Reference links are stored as JSON and rendered separately on the frontend
+- is_updated = 0 → Original articles
 
-This avoids unnecessary schema complexity while keeping the relationship clear.
+- is_updated = 1 → Rewritten articles
+
+Reference links are stored as JSON and rendered separately in the frontend.
+
+This keeps the schema simple while maintaining a clear relationship between versions.
 
 ---
 
-#### Error Handling & Trade-offs
+### Error Handling & Trade-offs
 
-- If fewer than two suitable reference articles are found, the article is skipped.
-- Failures in one article do not stop the entire script.
-- The pipeline prioritizes clarity and determinism over aggressive automation.
+- Articles are skipped if sufficient reference content is not available
 
-The goal of this phase is correctness and explainability, not maximum throughput.
+- Failures in one step do not break the entire pipeline
+
+- External content is truncated to stay within LLM limits
+
+The system prioritizes reliability and clarity over aggressive automation.
+
+---
+
+### Why This Project
+
+This project explores how AI can be used to augment content workflows, not replace them.
+
+Potential applications include:
+
+- Improving SEO performance of existing content
+
+- Scaling content rewriting for blogs or media platforms
+
+- Assisting writers with structured, reference-backed drafts
+
+It demonstrates how LLMs can be integrated into real systems with control, constraints, and transparency.
+
+---
+
+### Future Improvements
+
+- Ranking reference articles using semantic similarity
+
+- Adding evaluation metrics for content quality
+
+- Introducing human-in-the-loop editing workflows
+
+- Scheduling pipeline execution (cron jobs / queues)
+
+- Improving prompt strategies for domain-specific writing
 
 ---
 
@@ -211,60 +204,22 @@ No data mutation occurs on the frontend.
 
 ![Frontend Data Flow Diagram](./fdfd.png)
 
-### Phase 3: Frontend
-
-- React-based frontend to display articles.
-- Shows both original and updated versions.
-- Simple, responsive UI focused on readability rather than heavy styling.
-
 ---
 
-### Database Setup
+### Local Setup
 
-1. Install MySQL locally.
-2. Create a database (for example: `beyondchats`).
-3. Run the schema file:
+1. Clone the repository
 
-   mysql -u root -p beyondchats < backend/db/schema.sql
-
-Database credentials are managed using environment variables.
-
----
-
-## Local Setup
-
-1. Clone repo
 2. Install dependencies
-   npm install
-3. Create .env file
-4. Run scraper
-5. Start API server
-6. Run rewrite script
-7. Start frontend
 
----
+3. npm install
 
-### Design Notes & Decisions
+4. Configure .env variables
 
-The scraper intentionally uses simple and defensive selectors to avoid overfitting to the
-current HTML structure of the blog.
+5. Run scraper
 
-Pagination is handled explicitly to ensure the scraper always targets the oldest content, even
-when the last page contains fewer articles.
+6. Start backend server
 
-I checked for an RSS/Atom feed as a cleaner way to fetch articles, but chose to scrape the blogs
-section directly to stay aligned with the assignment requirement of scraping from the last page.
+7. Run rewrite pipeline
 
-Backend code follows a basic service–controller pattern to keep responsibilities separated and the
-logic easy to follow.
-
-Original articles are stored immutably. Updated articles are inserted
-as separate records, enabling clean side-by-side comparison without
-mutating source data.
-
----
-
-### Notes
-
-The focus of this project is correctness, clarity, and following the assignment requirements without
-over-engineering.
+8. Start frontend
