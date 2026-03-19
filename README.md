@@ -44,10 +44,14 @@ The frontend displays original and rewritten articles side by side for direct co
   Ensures rewritten content preserves intent and avoids copying or hallucination.
 
 - Side-by-Side Comparison UI
-  Displays original and rewritten articles with reference links for transparency.### Project Structure
+  Displays original and rewritten articles with reference links for transparency.
+
+---
+
+### Project Structure
 
 - The backend handles scraping, database operations, and automation logic.
-  The frontend is a small React app used to display articles.
+- The frontend is a small React app used to display articles.
 
 ---
 
